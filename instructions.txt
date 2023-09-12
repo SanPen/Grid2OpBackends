@@ -1,0 +1,20 @@
+
+when creating an envirinment
+
+see: https://github.com/BDonnot/lightsim2grid
+grid2op.make(..., backend=NewtonBackend)
+
+
+import grid2op
+from lightsim2grid import LightSimBackend
+env_name = "l2rpn_case14_sandbox"  # or any other name.  -> this is sent to the backend `/home/whatehver/grid2op_datasets/l2rpn_case14_sandbox/grid.json`
+env = grid2op.make(env_name, backend=LightSimBackend())
+
+# do regular computation as you would with grid2op
+
+
+from privateBackend import Backend
+env = grid2op.make(env_name, backend=Backend(path_to_converted_grid=THE_PATH_WHERE_GRID_IS_CONVERTED))
+
+path_to_converted_grid => l2rpn_case14_grid.xml, l2rpn_neurips_2020.xml etc. etc.
+
