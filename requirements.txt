@@ -1,4 +1,4 @@
 
 numba
 grid2op
-GridCal >= 5.0.0
+GridCalEngine >= 5.0.0a8

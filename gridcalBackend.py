@@ -20,8 +20,10 @@ from grid2op.Backend.backend import Backend
 from grid2op.Action import BaseAction
 from grid2op.Exceptions import *
 
-import newtonpa
-newtonpa.findAndActivateLicense()
+import GridCalEngine.Core.Devices as dev
+import GridCalEngine.Simulations as sim
+from GridCalEngine.Core.Devices.multi_circuit import MultiCircuit
+from GridCalEngine.Core.DataStructures.numerical_circuit import NumericalCircuit, compile_numerical_circuit_at
 
 
 def decode_panda_structre(obj: Dict[str, str]) -> pd.DataFrame:
@@ -35,7 +37,7 @@ def decode_panda_structre(obj: Dict[str, str]) -> pd.DataFrame:
     return pd.DataFrame(data=data['data'], columns=data['columns'], index=data['index'])
 
 
-class NewtonBackend(Backend):
+class GridCalBackend(Backend):
     """
     INTERNAL
 
@@ -210,10 +212,10 @@ class NewtonBackend(Backend):
         self._dist_slack = dist_slack
         self._max_iter = max_iter
 
-        self.pf_options = newtonpa.PowerFlowOptions(max_iter=max_iter)
-        self._grid: Union[newtonpa.HybridCircuit, None] = None
-        self.numerical_circuit: Union[newtonpa.NumericCircuit, None] = None
-        self.results: Union[newtonpa.PowerFlowResults, None] = None
+        self.pf_options = sim.PowerFlowOptions(max_iter=max_iter)
+        self._grid: Union[MultiCircuit, None] = None
+        self.numerical_circuit: Union[NumericalCircuit, None] = None
+        self.results: Union[sim.PowerFlowResults, None] = None
 
     def get_theta(self):
         """
@@ -249,7 +251,7 @@ class NewtonBackend(Backend):
 
         Reload the grid.
         """
-        self.numerical_circuit = newtonpa.compileAt(circuit=self._grid, t=0)
+        self.numerical_circuit = compile_numerical_circuit_at(circuit=self._grid, t_idx=None)
 
     def load_grid(self, path=None, filename=None):
         """
@@ -262,24 +264,105 @@ class NewtonBackend(Backend):
         are set as "out of service" unless a topological action acts on these specific substations.
 
         """
-        self._grid = newtonpa.HybridCircuit()
+        self._grid = MultiCircuit()
 
         with open(path) as f:
             data = json.load(f)
             data2 = data['_object']
 
         # buses
+        bus_dict = dict()
         for i, row in decode_panda_structre(obj=data2['bus']).iterrows():
-            self._grid.addCalculationNode(newtonpa.CalculationNode(uuid='',
-                                                                   secondary_id='',
-                                                                   name=str(row['name']),
-                                                                   time_steps=1,
-                                                                   active_default=1,
-                                                                   nominal_voltage=row['vn_kv'],
-                                                                   vm_min=row['min_vm_pu'],
-                                                                   vm_max=row['max_vm_pu']))
+            bus = dev.Bus(idtag='',
+                          code='',
+                          name=str(row['name']),
+                          active=True,
+                          vnom=row['vn_kv'],
+                          vmin=row['min_vm_pu'],
+                          vmax=row['max_vm_pu'])
+            bus_dict[i] = bus
+            self._grid.add_bus(bus)
 
-        self.numerical_circuit = newtonpa.compileAt(circuit=self._grid, t=0)
+        # loads
+        for i, row in decode_panda_structre(obj=data2['load']).iterrows():
+            bus = bus_dict[row['bus']]
+            self._grid.add_load(bus, dev.Load(idtag='',
+                                              code='',
+                                              name=str(row['name']),
+                                              active=True,
+                                              P=row['p_mw'] * row['scaling'],
+                                              Q=row['q_mvar'] * row['scaling']))
+
+        # shunt
+        for i, row in decode_panda_structre(obj=data2['shunt']).iterrows():
+            bus = bus_dict[row['bus']]
+            self._grid.add_shunt(bus, dev.Shunt(idtag='',
+                                                code='',
+                                                name=str(row['name']),
+                                                active=True,
+                                                G=row['p_mw'],
+                                                B=row['q_mvar']))
+
+        # generators
+        for i, row in decode_panda_structre(obj=data2['gen']).iterrows():
+
+            bus = bus_dict[row['bus']]
+
+            if row['slack']:
+                bus.is_slack = True
+
+            self._grid.add_generator(bus, dev.Generator(idtag='',
+                                                        code='',
+                                                        name=str(row['name']),
+                                                        active=True,
+                                                        active_power=row['p_mw'] * row['scaling'],
+                                                        voltage_module=row['vm_pu'],
+                                                        p_min=row['min_p_mw'],
+                                                        p_max=row['max_p_mw'],
+                                                        Qmin=row['min_q_mvar'],
+                                                        Qmax=row['max_q_mvar'], ))
+
+        # lines
+        for i, row in decode_panda_structre(obj=data2['line']).iterrows():
+            bus_f = bus_dict[row['from_bus']]
+            bus_t = bus_dict[row['to_bus']]
+            line = dev.Line(idtag='',
+                            code='',
+                            name=str(row['name']),
+                            active=True,
+                            bus_from=bus_f,
+                            bus_to=bus_t)
+
+            line.fill_design_properties(r_ohm=0,
+                                        x_ohm=0,
+                                        c_nf=0,
+                                        Imax=0,
+                                        freq=50,
+                                        length=0,
+                                        Sbase=self._grid.Sbase)
+            self._grid.add_line(line)
+
+        # transformer
+        for i, row in decode_panda_structre(obj=data2['trafo']).iterrows():
+            bus_f = bus_dict[row['from_bus']]
+            bus_t = bus_dict[row['to_bus']]
+
+            transformer = dev.Transformer2W(idtag='',
+                                            code='',
+                                            name=str(row['name']),
+                                            active=True,
+                                            bus_from=bus_f,
+                                            bus_to=bus_t)
+
+            transformer.fill_design_properties(Pcu=0,
+                                               Pfe=0,
+                                               I0=0,
+                                               Vsc=0,
+                                               Sbase=self._grid.Sbase)
+
+            self._grid.add_transformer2w(transformer)
+
+        self.numerical_circuit = compile_numerical_circuit_at(circuit=self._grid, t_idx=None)
 
     def storage_deact_for_backward_comaptibility(self):
         """
