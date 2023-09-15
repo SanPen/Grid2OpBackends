@@ -315,10 +315,10 @@ class GridCalBackend(Backend):
                                                         code='',
                                                         name=str(row['name']),
                                                         active=True,
-                                                        active_power=row['p_mw'] * row['scaling'],
-                                                        voltage_module=row['vm_pu'],
-                                                        p_min=row['min_p_mw'],
-                                                        p_max=row['max_p_mw'],
+                                                        P=row['p_mw'] * row['scaling'],
+                                                        vset=row['vm_pu'],
+                                                        Pmin=row['min_p_mw'],
+                                                        Pmax=row['max_p_mw'],
                                                         Qmin=row['min_q_mvar'],
                                                         Qmax=row['max_q_mvar'], ))
 
