@@ -24,6 +24,8 @@ import GridCalEngine.Core.Devices as dev
 import GridCalEngine.Simulations as sim
 from GridCalEngine.Core.Devices.multi_circuit import MultiCircuit
 from GridCalEngine.Core.DataStructures.numerical_circuit import NumericalCircuit, compile_numerical_circuit_at
+from GridCalEngine.Simulations.PowerFlow.power_flow_worker import multi_island_pf_nc
+from GridCalEngine.IO.file_handler import FileSave
 
 
 def decode_panda_structre(obj: Dict[str, str]) -> pd.DataFrame:
@@ -333,31 +335,40 @@ class GridCalBackend(Backend):
                             bus_from=bus_f,
                             bus_to=bus_t)
 
-            line.fill_design_properties(r_ohm=0,
-                                        x_ohm=0,
-                                        c_nf=0,
-                                        Imax=0,
+            if line.name == 'None':
+                line.name = 'Line {}'.format(i)
+
+            line.fill_design_properties(r_ohm=row['r_ohm_per_km'],
+                                        x_ohm=row['x_ohm_per_km'],
+                                        c_nf=row['c_nf_per_km'],
+                                        Imax=row['max_i_ka'],
                                         freq=50,
-                                        length=0,
+                                        length=row['length_km'],
                                         Sbase=self._grid.Sbase)
             self._grid.add_line(line)
 
         # transformer
         for i, row in decode_panda_structre(obj=data2['trafo']).iterrows():
-            bus_f = bus_dict[row['from_bus']]
-            bus_t = bus_dict[row['to_bus']]
+            bus_f = bus_dict[row['lv_bus']]
+            bus_t = bus_dict[row['hv_bus']]
 
             transformer = dev.Transformer2W(idtag='',
                                             code='',
                                             name=str(row['name']),
                                             active=True,
                                             bus_from=bus_f,
-                                            bus_to=bus_t)
+                                            bus_to=bus_t,
+                                            HV=row['vn_hv_kv'],
+                                            LV=row['vn_lv_kv'],
+                                            rate=row['sn_mva'])
+
+            if transformer.name == 'None':
+                transformer.name = 'Line {}'.format(i)
 
             transformer.fill_design_properties(Pcu=0,
-                                               Pfe=0,
-                                               I0=0,
-                                               Vsc=0,
+                                               Pfe=row['pfe_kw'],
+                                               I0=row['i0_percent'],
+                                               Vsc=row['vk_percent'],
                                                Sbase=self._grid.Sbase)
 
             self._grid.add_transformer2w(transformer)
@@ -490,9 +501,7 @@ class GridCalBackend(Backend):
         buses has not changed between two calls, the previous results are re used. This speeds up the computation
         in case of "do nothing" action applied.
         """
-        newtonpa.runSingleTimePowerFlow(numeric_circuit=self.numerical_circuit,
-                                        pf_options=self.pf_options,
-                                        V0=None)
+        self.results = multi_island_pf_nc(nc=self.numerical_circuit, options=self.pf_options)
 
     def assert_grid_correct(self):
         """
@@ -538,7 +547,7 @@ class GridCalBackend(Backend):
         :param full_path:
         :return:
         """
-        newtonpa.FileHandler().save(circuit=self._grid, file_name=full_path)
+        FileSave(circuit=self._grid, file_name=full_path).save()
 
     def get_line_status(self):
         """
