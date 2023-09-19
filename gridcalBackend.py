@@ -373,7 +373,29 @@ class GridCalBackend(Backend):
 
             self._grid.add_transformer2w(transformer)
 
+        # compile for easy numerical access
         self.numerical_circuit = compile_numerical_circuit_at(circuit=self._grid, t_idx=None)
+
+        # load the grid in your favorite format:
+        # self._grid = ...  # the way you do that depends on the "solver" you use
+
+        # and now initialize the attributes (see list bellow)
+        self.n_line = self.numerical_circuit.nbr  # number of lines in the grid should be read from self._grid
+        self.n_gen = self.numerical_circuit.ngen  # number of generators in the grid should be read from self._grid
+        self.n_load = self.numerical_circuit.nload  # number of generators in the grid should be read from self._grid
+        self.n_sub = self.numerical_circuit.nbus  # number of generators in the grid should be read from self._grid
+
+        # other attributes should be read from self._grid (see table below for a full list of the attributes)
+        self.load_to_subid = self.numerical_circuit.load_data.get_bus_indices()  # For each load, it gives the substation id to which it is connected
+        self.gen_to_subid = self.numerical_circuit.generator_data.get_bus_indices()
+        self.line_or_to_subid = self.numerical_circuit.branch_data.F
+        self.line_ex_to_subid = self.numerical_circuit.branch_data.T
+
+        # and finish the initialization with a call to this function
+        self._compute_pos_big_topo()
+
+        # the initial thermal limit
+        self.thermal_limit_a = self.numerical_circuit.branch_data.rates
 
     def storage_deact_for_backward_comaptibility(self):
         """
@@ -573,16 +595,16 @@ class GridCalBackend(Backend):
 
     def generators_info(self):
         return (
-            self.cst_1 * self.prod_p,
-            self.cst_1 * self.prod_q,
-            self.cst_1 * self.prod_v,
+            self.cst_1 * self.numerical_circuit.generator_data.p,
+            self.cst_1 * np.zeros(self.numerical_circuit.ngen),
+            self.cst_1 * self.numerical_circuit.generator_data.v,
         )
 
     def loads_info(self):
         return (
-            self.cst_1 * self.load_p,
-            self.cst_1 * self.load_q,
-            self.cst_1 * self.load_v,
+            self.cst_1 * self.numerical_circuit.load_data.S.real,
+            self.cst_1 * self.numerical_circuit.load_data.S.imag,
+            self.cst_1 * np.ones(self.numerical_circuit.nload),
         )
 
     def lines_or_info(self):
