@@ -67,55 +67,59 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
     # loads
     for i, row in decode_panda_structre(obj=data2['load']).iterrows():
         bus = bus_dict[row['bus']]
+
+        name = "load_{0}_{1}".format(row['bus'], i)
+
         grid.add_load(bus, dev.Load(idtag='',
-                                          code='',
-                                          name=str(row['name']),
-                                          active=True,
-                                          P=row['p_mw'] * row['scaling'],
-                                          Q=row['q_mvar'] * row['scaling']))
+                                    code='',
+                                    name=name,
+                                    active=True,
+                                    P=row['p_mw'] * row['scaling'],
+                                    Q=row['q_mvar'] * row['scaling']))
 
     # shunt
     for i, row in decode_panda_structre(obj=data2['shunt']).iterrows():
         bus = bus_dict[row['bus']]
         grid.add_shunt(bus, dev.Shunt(idtag='',
-                                            code='',
-                                            name=str(row['name']),
-                                            active=True,
-                                            G=row['p_mw'],
-                                            B=row['q_mvar']))
+                                      code='',
+                                      name=str(row['name']),
+                                      active=True,
+                                      G=row['p_mw'],
+                                      B=row['q_mvar']))
 
     # generators
     for i, row in decode_panda_structre(obj=data2['gen']).iterrows():
 
         bus = bus_dict[row['bus']]
+        name = "gen_{0}_{1}".format(row['bus'], i)
 
         if row['slack']:
             bus.is_slack = True
 
         grid.add_generator(bus, dev.Generator(idtag='',
-                                                    code='',
-                                                    name=str(row['name']),
-                                                    active=True,
-                                                    P=row['p_mw'] * row['scaling'],
-                                                    vset=row['vm_pu'],
-                                                    Pmin=row['min_p_mw'],
-                                                    Pmax=row['max_p_mw'],
-                                                    Qmin=row['min_q_mvar'],
-                                                    Qmax=row['max_q_mvar'], ))
+                                              code='',
+                                              name=name,
+                                              active=True,
+                                              P=row['p_mw'] * row['scaling'],
+                                              vset=row['vm_pu'],
+                                              Pmin=row['min_p_mw'],
+                                              Pmax=row['max_p_mw'],
+                                              Qmin=row['min_q_mvar'],
+                                              Qmax=row['max_q_mvar'], ))
 
     # lines
     for i, row in decode_panda_structre(obj=data2['line']).iterrows():
         bus_f = bus_dict[row['from_bus']]
         bus_t = bus_dict[row['to_bus']]
+
+        name = 'CryLine {}'.format(i)
+
         line = dev.Line(idtag='',
                         code='',
-                        name=str(row['name']),
+                        name=name,
                         active=True,
                         bus_from=bus_f,
                         bus_to=bus_t)
-
-        if line.name == 'None':
-            line.name = 'Line {}'.format(i)
 
         line.fill_design_properties(r_ohm=row['r_ohm_per_km'],
                                     x_ohm=row['x_ohm_per_km'],
@@ -131,18 +135,17 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         bus_f = bus_dict[row['lv_bus']]
         bus_t = bus_dict[row['hv_bus']]
 
+        name = 'Line {}'.format(i)  # transformers are also calles Line apparently
+
         transformer = dev.Transformer2W(idtag='',
                                         code='',
-                                        name=str(row['name']),
+                                        name=name,
                                         active=True,
                                         bus_from=bus_f,
                                         bus_to=bus_t,
                                         HV=row['vn_hv_kv'],
                                         LV=row['vn_lv_kv'],
                                         rate=row['sn_mva'])
-
-        if transformer.name == 'None':
-            transformer.name = 'Line {}'.format(i)
 
         transformer.fill_design_properties(Pcu=0,
                                            Pfe=row['pfe_kw'],
@@ -401,6 +404,12 @@ class GridCalBackend(Backend):
         self.gen_to_subid = self.numerical_circuit.generator_data.get_bus_indices()
         self.line_or_to_subid = self.numerical_circuit.branch_data.F
         self.line_ex_to_subid = self.numerical_circuit.branch_data.T
+
+        # naming
+        self.name_load = self.numerical_circuit.load_data.names
+        self.name_gen = self.numerical_circuit.generator_data.names
+        self.name_line = self.numerical_circuit.branch_data.names
+        self.name_sub = self.numerical_circuit.bus_data.names
 
         # gather the nominal voltages array (kV)
         self.Vnom = np.array([b.Vnom for b in self._grid.buses])
@@ -672,7 +681,7 @@ class GridCalBackend(Backend):
         else:
             P = np.zeros(self.numerical_circuit.nshunt)  # MW
             Q = np.zeros(self.numerical_circuit.nshunt)  # MVAr
-            V = self.Vnom * self.numerical_circuit.shunt_data.C_bus_elm   # kV
+            V = self.Vnom * self.numerical_circuit.shunt_data.C_bus_elm  # kV
             A = self.numerical_circuit.shunt_data.get_bus_indices()
 
         return P, Q, V, A
@@ -688,7 +697,6 @@ class GridCalBackend(Backend):
             V = self.Vnom * self.numerical_circuit.battery_data.C_bus_elm
 
         return P, Q, V
-
 
     def sub_from_bus_id(self, bus_id):
         if bus_id >= self._number_true_line:
