@@ -6,13 +6,11 @@
 # SPDX-License-Identifier: MPL-2.0
 # This file is part of Grid2Op, Grid2Op a testbed platform to model sequential decision making in power systems.
 
-import os  # load the python os default module
-import sys  # laod the python sys default module
-from typing import Dict
 import json
+import copy
 import numpy as np
 import pandas as pd
-import copy
+from typing import Dict
 from typing import Union
 
 from grid2op.Backend.backend import Backend
@@ -166,77 +164,9 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
 
 
 class GridCalBackend(Backend):
+
     """
-    INTERNAL
-
-    .. warning:: /!\\\\ Internal, do not use unless you know what you are doing /!\\\\
-
-        If you want to code a backend to use grid2op with another powerflow, you can get inspired
-        from this class. Note However that implies knowing the behaviour
-        of PandaPower.
-
-    This module presents an example of an implementation of a `grid2op.Backend` when using the powerflow
-    implementation "newton" available at `www.advancedgridinsights.com`_ for more details about
-    this backend. This file is provided as an example of a proper :class:`grid2op.Backend.Backend` implementation.
-
-    This backend currently does not work with 3 winding transformers and other exotic object.
-
-    As explained in the `grid2op.Backend` module, every module must inherit the `grid2op.Backend` class.
-
-    This class have more attributes that are used internally for faster information retrieval.
-
-    Attributes
-    ----------
-    prod_pu_to_kv: :class:`numpy.array`, dtype:float
-        The ratio that allow the conversion from pair-unit to kv for the generators
-
-    load_pu_to_kv: :class:`numpy.array`, dtype:float
-        The ratio that allow the conversion from pair-unit to kv for the loads
-
-    lines_or_pu_to_kv: :class:`numpy.array`, dtype:float
-        The ratio that allow the conversion from pair-unit to kv for the origin end of the powerlines
-
-    lines_ex_pu_to_kv: :class:`numpy.array`, dtype:float
-        The ratio that allow the conversion from pair-unit to kv for the extremity end of the powerlines
-
-    p_or: :class:`numpy.array`, dtype:float
-        The active power flowing at the origin end of each powerline
-
-    q_or: :class:`numpy.array`, dtype:float
-        The reactive power flowing at the origin end of each powerline
-
-    v_or: :class:`numpy.array`, dtype:float
-        The voltage magnitude at the origin bus of the powerline
-
-    a_or: :class:`numpy.array`, dtype:float
-        The current flowing at the origin end of each powerline
-
-    p_ex: :class:`numpy.array`, dtype:float
-        The active power flowing at the extremity end of each powerline
-
-    q_ex: :class:`numpy.array`, dtype:float
-        The reactive power flowing at the extremity end of each powerline
-
-    a_ex: :class:`numpy.array`, dtype:float
-        The current flowing at the extremity end of each powerline
-
-    v_ex: :class:`numpy.array`, dtype:float
-        The voltage magnitude at the extremity bus of the powerline
-
-    Examples
-    ---------
-    The only recommended way to use this class is by passing an instance of a Backend into the "make"
-    function of grid2op. Do not attempt to use a backend outside of this specific usage.
-
-    .. code-block:: python
-
-            import grid2op
-            from grid2op.Backend import PandaPowerBackend
-            backend = PandaPowerBackend()
-
-            env = grid2op.make(backend=backend)
-            # and use "env" as any open ai gym environment.
-
+    Grid2Op backend using GridCalEngine
     """
 
     def __init__(self,
@@ -245,6 +175,9 @@ class GridCalBackend(Backend):
                  max_iter=10):
         """
 
+        :param detailed_infos_for_cascading_failures:
+        :param dist_slack:
+        :param max_iter:
         """
 
         Backend.__init__(self,
@@ -254,95 +187,19 @@ class GridCalBackend(Backend):
                          dist_slack=dist_slack,
                          max_iter=max_iter)
 
-        # self.prod_pu_to_kv = None
-        # self.load_pu_to_kv = None
-        # self.lines_or_pu_to_kv = None
-        # self.lines_ex_pu_to_kv = None
-        # self.storage_pu_to_kv = None
-        #
-        # self.p_or = None
-        # self.q_or = None
-        # self.v_or = None
-        # self.a_or = None
-        # self.p_ex = None
-        # self.q_ex = None
-        # self.v_ex = None
-        # self.a_ex = None
-        #
-        # self.load_p = None
-        # self.load_q = None
-        # self.load_v = None
-        #
-        # self.storage_p = None
-        # self.storage_q = None
-        # self.storage_v = None
-        #
-        # self.prod_p = None
-        # self.prod_q = None
-        # self.prod_v = None
-        # self.line_status = None
-        #
-        # self._pf_init = "flat"
-        # self._pf_init = "results"
-        # self._nb_bus_before = None  # number of active bus at the preceeding step
-        #
-        # self.thermal_limit_a = None
-        #
-        # self._iref_slack = None
-        # self._id_bus_added = None
-        # self._fact_mult_gen = -1
-        # self._what_object_where = None
-        # self._number_true_line = -1
-        # self._corresp_name_fun = {}
-        # self._get_vector_inj = {}
-        # self.dim_topo = -1
-        # self._vars_action = BaseAction.attr_list_vect
-        # self._vars_action_set = BaseAction.attr_list_vect
-        # self.cst_1 = dt_float(1.0)
-        # self._topo_vect = None
-        # self.slack_id = None
-        #
-        # # function to rstore some information
-        # self.__nb_bus_before = None  # number of substation in the powergrid
-        # self.__nb_powerline = (
-        #     None  # number of powerline (real powerline, not transformer)
-        # )
-        # self._init_bus_load = None
-        # self._init_bus_gen = None
-        # self._init_bus_lor = None
-        # self._init_bus_lex = None
-        # self._get_vector_inj = None
-        # self._big_topo_to_obj = None
-        # self._big_topo_to_backend = None
-        # self.__pp_backend_initial_grid = None  # initial state to facilitate the "reset"
-        #
-        # # Mapping some fun to apply bus updates
-        # self._type_to_bus_set = [
-        #     # self._apply_load_bus,
-        #     # self._apply_gen_bus,
-        #     # self._apply_lor_bus,
-        #     # self._apply_trafo_hv,
-        #     # self._apply_lex_bus,
-        #     # self._apply_trafo_lv,
-        # ]
-        #
-        # self.tol = None  # this is NOT the pandapower tolerance !!!! this is used to check if a storage unit
-        # # produce / absorbs anything
-        #
-        # # TODO storage doc (in grid2op rst) of the backend
-        # self.can_output_theta = True  # I support the voltage angle
-        # self.theta_or = None
-        # self.theta_ex = None
-        # self.load_theta = None
-        # self.gen_theta = None
-        # self.storage_theta = None
-        #
-        # self._dist_slack = dist_slack
-        # self._max_iter = max_iter
+        # maximum number of iterations for the power flow
+        self.max_iter = max_iter
 
-        self.pf_options = sim.PowerFlowOptions(max_iter=max_iter, distributed_slack=dist_slack)
+        # use distributed slack?
+        self.distributed_slack = dist_slack
+
+        # GridCal main circuit object
         self._grid: Union[MultiCircuit, None] = None
+
+        # GridCal numerical circuit object for easy numerical access / modification
         self.numerical_circuit: Union[NumericalCircuit, None] = None
+
+        # Power flow results
         self.results: Union[sim.PowerFlowResults, None] = None
 
     def get_theta(self):
@@ -389,24 +246,10 @@ class GridCalBackend(Backend):
         """
         self.numerical_circuit = compile_numerical_circuit_at(circuit=self._grid, t_idx=None)
 
-    def load_grid(self, path=None, filename=None):
+    def initiailize_or_update_internals(self):
         """
-        INTERNAL
-
-        .. warning:: /!\\\\ Internal, do not use unless you know what you are doing /!\\\\
-
-        Load the _grid, and initialize all the member of the class. Note that in order to perform topological
-        modification of the substation of the underlying powergrid, some buses are added to the test case loaded. They
-        are set as "out of service" unless a topological action acts on these specific substations.
-
+        Initialize / Update things after loading / copying
         """
-
-        # parse the pandapower json file
-        self._grid = read_pandapower_file(filename=path)
-
-        # compile for easy numerical access
-        self.numerical_circuit = compile_numerical_circuit_at(circuit=self._grid, t_idx=None)
-
         # and now initialize the attributes (see list bellow)
         self.n_line = self.numerical_circuit.nbr  # number of lines in the grid should be read from self._grid
         self.n_gen = self.numerical_circuit.ngen  # number of generators in the grid should be read from self._grid
@@ -431,6 +274,27 @@ class GridCalBackend(Backend):
         # the initial thermal limit
         self.thermal_limit_a = self.numerical_circuit.branch_data.rates
 
+    def load_grid(self, path=None, filename=None):
+        """
+        INTERNAL
+
+        .. warning:: /!\\\\ Internal, do not use unless you know what you are doing /!\\\\
+
+        Load the _grid, and initialize all the member of the class. Note that in order to perform topological
+        modification of the substation of the underlying powergrid, some buses are added to the test case loaded. They
+        are set as "out of service" unless a topological action acts on these specific substations.
+
+        """
+
+        # parse the pandapower json file
+        self._grid = read_pandapower_file(filename=path)
+
+        # compile for easy numerical access
+        self.numerical_circuit = compile_numerical_circuit_at(circuit=self._grid, t_idx=None)
+
+        # initilize internals
+        self.initiailize_or_update_internals()
+
     def storage_deact_for_backward_comaptibility(self):
         """
         INTERNAL
@@ -447,7 +311,7 @@ class GridCalBackend(Backend):
         your backend.
         """
 
-        # TODO: sanpen: WTF is this?
+        # TODO: sanpen: what is this?
 
         pass
 
@@ -508,11 +372,13 @@ class GridCalBackend(Backend):
         in case of "do nothing" action applied.
         """
 
-        # set the solver type
-        self.pf_options.solver_type = SolverType.DC if is_dc else SolverType.NR
-
+        # power flow options
+        pf_options = sim.PowerFlowOptions(max_iter=self.max_iter,
+                                          distributed_slack=self.distributed_slack,
+                                          solver_type=SolverType.DC if is_dc else SolverType.NR,
+                                          retry_with_other_methods=True)
         # run the power flow
-        self.results = multi_island_pf_nc(nc=self.numerical_circuit, options=self.pf_options)
+        self.results = multi_island_pf_nc(nc=self.numerical_circuit, options=pf_options)
 
         # return the status
         return self.results.converged, None
@@ -535,13 +401,19 @@ class GridCalBackend(Backend):
 
         Performs a deep copy of the power :attr:`_grid`.
         """
-        # bkend_copy = GridCalBackend()
-        # return self._grid.copy()
+
+        # unattended copy
         tmp_ = self._grid
         self._grid = None
         res = copy.deepcopy(self)
         res._grid = tmp_.copy()
         self._grid = tmp_
+
+        # res = GridCalBackend()
+        # res.numerical_circuit = self.numerical_circuit.copy()
+        # res._grid = self._grid  # this can be a refference since all the stuff is done with numerical_circuit
+        # res.initiailize_or_update_internals()
+
         return res
 
     def close(self):

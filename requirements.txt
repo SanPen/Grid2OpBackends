@@ -1,4 +1,5 @@
 
+numpy
 numba
 grid2op
 GridCalEngine >= 5.0.0a15
