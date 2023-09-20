@@ -22,6 +22,7 @@ import GridCalEngine.Simulations as sim
 from GridCalEngine.Core.Devices.multi_circuit import MultiCircuit
 from GridCalEngine.Core.DataStructures.numerical_circuit import NumericalCircuit, compile_numerical_circuit_at
 from GridCalEngine.Simulations.PowerFlow.power_flow_worker import multi_island_pf_nc
+from GridCalEngine.basic_structures import SolverType
 from GridCalEngine.IO.file_handler import FileSave
 
 
@@ -506,8 +507,14 @@ class GridCalBackend(Backend):
         buses has not changed between two calls, the previous results are re used. This speeds up the computation
         in case of "do nothing" action applied.
         """
+
+        # set the solver type
+        self.pf_options.solver_type = SolverType.DC if is_dc else SolverType.NR
+
+        # run the power flow
         self.results = multi_island_pf_nc(nc=self.numerical_circuit, options=self.pf_options)
 
+        # return the status
         return self.results.converged, None
 
     def assert_grid_correct(self):
