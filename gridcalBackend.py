@@ -12,7 +12,7 @@ from typing import Dict
 import json
 import numpy as np
 import pandas as pd
-import scipy
+import copy
 from typing import Union
 
 from grid2op.dtypes import dt_int, dt_float, dt_bool
@@ -460,80 +460,32 @@ class GridCalBackend(Backend):
             shunts__,
         ) = backendAction()
 
-        # handle bus status
-        bus_is = self._grid.bus["in_service"]
-        # TODO: what is this? why are there 2 buses?
+        # buses
         for i, (bus1_status, bus2_status) in enumerate(active_bus):
-            bus_is[i] = bus1_status  # no iloc for bus, don't ask me why please :-/
-            bus_is[i + self.__nb_bus_before] = bus2_status
-            # self.numerical_circuit.bus_data.setActiveAt()
+            # TODO: what is this? why are there 2 buses?
+            self.numerical_circuit.bus_data.active[i] = bus1_status
 
-        # tmp_prod_p = self._get_vector_inj["prod_p"](self._grid)
-        if prod_p.changed.any():
-            # tmp_prod_p.iloc[prod_p.changed] = prod_p.values[prod_p.changed]
-            self.numerical_circuit.generator_data.P = prod_p.values
+        # generators
+        for i, (changed, p) in enumerate(zip(prod_p.changed, prod_p.values)):
+            if changed:
+                self.numerical_circuit.generator_data.P = p
 
-        tmp_prod_v = self._get_vector_inj["prod_v"](self._grid)
-        if prod_v.changed.any():
-            # tmp_prod_v.iloc[prod_v.changed] = (
-            #         prod_v.values[prod_v.changed] / self.prod_pu_to_kv[prod_v.changed]
-            # )
-            self.numerical_circuit.generator_data.vset = prod_v.values
+        # batteries
+        for i, (changed, p) in enumerate(zip(storage.changed, storage.values)):
+            if changed:
+                self.numerical_circuit.battery_data.P = p
 
-        # todo: add buses on the fly? highly sus
-        if self._id_bus_added is not None and prod_v.changed[self._id_bus_added]:
-            # handling of the slack bus, where "2" generators are present.
-            self._grid["ext_grid"]["vm_pu"] = 1.0 * tmp_prod_v[self._id_bus_added]
+        # loads
+        for i, (changed_p, p, changed_q, q) in enumerate(zip(load_p.changed, load_p.values,
+                                                             load_q.changed, load_q.values)):
+            if changed_p:
+                self.numerical_circuit.load_data.P = p
+            if changed_q:
+                self.numerical_circuit.load_data.Q = q
 
-        if load_p.changed.any():
-            self.numerical_circuit.load_data.P = load_p.values
+        # TODO: what about shunts?
 
-        if load_q.changed.any():
-            self.numerical_circuit.load_data.Q = load_q.values
-
-        if self.n_storage:
-
-            # active setpoint
-            if storage.changed.any():
-                self.numerical_circuit.battery_data.P = storage.values
-
-            # topology of the storage
-            stor_bus = backendAction.get_storages_bus()
-            new_bus_id = stor_bus.values[stor_bus.changed]  # id of the busbar 1 or 2 if
-            activated = new_bus_id > 0  # mask of storage that have been activated
-            new_bus_num = self.storage_to_subid[stor_bus.changed] + (new_bus_id - 1) * self.n_sub  # bus number
-            new_bus_num[~activated] = self.storage_to_subid[stor_bus.changed][~activated]
-            self._grid.storage["in_service"].values[stor_bus.changed] = activated
-            self._grid.storage["bus"].values[stor_bus.changed] = new_bus_num
-            self._topo_vect[self.storage_pos_topo_vect[stor_bus.changed]] = new_bus_num
-            self._topo_vect[self.storage_pos_topo_vect[stor_bus.changed][~activated]] = -1
-
-        if type(backendAction).shunts_data_available:
-            shunt_p, shunt_q, shunt_bus = shunts__
-
-            if (shunt_p.changed).any():
-                self._grid.shunt["p_mw"].iloc[shunt_p.changed] = shunt_p.values[
-                    shunt_p.changed
-                ]
-            if (shunt_q.changed).any():
-                self._grid.shunt["q_mvar"].iloc[shunt_q.changed] = shunt_q.values[
-                    shunt_q.changed
-                ]
-            if (shunt_bus.changed).any():
-                sh_service = shunt_bus.values[shunt_bus.changed] != -1
-                self._grid.shunt["in_service"].iloc[shunt_bus.changed] = sh_service
-                chg_and_in_service = sh_service & shunt_bus.changed
-                self._grid.shunt["bus"].loc[chg_and_in_service] = cls.local_bus_to_global(
-                    shunt_bus.values[chg_and_in_service],
-                    cls.shunt_to_subid[chg_and_in_service])
-
-        # i made at least a real change, so i implement it in the backend
-        for id_el, new_bus in topo__:
-            id_el_backend, id_topo, type_obj = self._big_topo_to_backend[id_el]
-
-            if type_obj is not None:
-                # storage unit are handled elsewhere
-                self._type_to_bus_set[type_obj](new_bus, id_el_backend, id_topo)
+        # TODO: what about topology?
 
     def runpf(self, is_dc=False):
         """
@@ -566,7 +518,14 @@ class GridCalBackend(Backend):
 
         Performs a deep copy of the power :attr:`_grid`.
         """
-        return self._grid.copy()
+        # bkend_copy = GridCalBackend()
+        # return self._grid.copy()
+        tmp_ = self._grid
+        self._grid = None
+        res = copy.deepcopy(self)
+        res._grid = tmp_.copy()
+        self._grid = tmp_
+        return res
 
     def close(self):
         """
