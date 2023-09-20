@@ -146,7 +146,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
                                         LV=row['vn_lv_kv'],
                                         rate=row['sn_mva'])
 
-        transformer.fill_design_properties(Pcu=0,
+        transformer.fill_design_properties(Pcu=0.0,  # pandapower has no pcu apparently
                                            Pfe=row['pfe_kw'],
                                            I0=row['i0_percent'],
                                            Vsc=row['vk_percent'],
@@ -341,20 +341,20 @@ class GridCalBackend(Backend):
         # generators
         for i, (changed, p) in enumerate(zip(prod_p.changed, prod_p.values)):
             if changed:
-                self.numerical_circuit.generator_data.P = p
+                self.numerical_circuit.generator_data.P[i] = p
 
         # batteries
         for i, (changed, p) in enumerate(zip(storage.changed, storage.values)):
             if changed:
-                self.numerical_circuit.battery_data.P = p
+                self.numerical_circuit.battery_data.P[i] = p
 
         # loads
         for i, (changed_p, p, changed_q, q) in enumerate(zip(load_p.changed, load_p.values,
                                                              load_q.changed, load_q.values)):
             if changed_p:
-                self.numerical_circuit.load_data.P = p
+                self.numerical_circuit.load_data.P[i] = p
             if changed_q:
-                self.numerical_circuit.load_data.Q = q
+                self.numerical_circuit.load_data.Q[i] = q
 
         # TODO: what about shunts?
 
@@ -556,7 +556,7 @@ class GridCalBackend(Backend):
         else:
             P = np.zeros(self.numerical_circuit.nbr)  # MW
             Q = np.zeros(self.numerical_circuit.nbr)  # MVAr
-            V = self.numerical_circuit.branch_data.C_branch_bus_f * self.numerical_circuit.bus_data.Vnom  # kV
+            V = self.numerical_circuit.branch_data.C_branch_bus_t * self.numerical_circuit.bus_data.Vnom  # kV
             A = self.numerical_circuit.branch_data.T
 
         return P, Q, V, A
@@ -584,8 +584,8 @@ class GridCalBackend(Backend):
             Q = np.abs(self.results.Sbus.imag) * self.numerical_circuit.battery_data.C_bus_elm
             V = Vm * self.numerical_circuit.battery_data.C_bus_elm
         else:
-            P = np.zeros(self.numerical_circuit.ngen)
-            Q = np.zeros(self.numerical_circuit.ngen)
+            P = np.zeros(self.numerical_circuit.nbatt)
+            Q = np.zeros(self.numerical_circuit.nbatt)
             V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.battery_data.C_bus_elm
 
         return P, Q, V

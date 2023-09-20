@@ -6,22 +6,22 @@
 # SPDX-License-Identifier: MPL-2.0
 # This file is part of Grid2Op, Grid2Op a testbed platform to model sequential decision making in power systems.
 
-import os  # load the python os default module
-import sys  # laod the python sys default module
-from typing import Dict
 import json
+import copy
 import numpy as np
 import pandas as pd
-import scipy
-from typing import Union
+from typing import Dict, Union
+
+from grid2op.Backend.backend import Backend
 
 from grid2op.dtypes import dt_int, dt_float, dt_bool
 from grid2op.Backend.backend import Backend
 from grid2op.Action import BaseAction
 from grid2op.Exceptions import *
 
-import newtonpa
-newtonpa.findAndActivateLicense()
+import newtonpa as npa
+
+npa.findAndActivateLicense()
 
 
 def decode_panda_structre(obj: Dict[str, str]) -> pd.DataFrame:
@@ -35,78 +35,147 @@ def decode_panda_structre(obj: Dict[str, str]) -> pd.DataFrame:
     return pd.DataFrame(data=data['data'], columns=data['columns'], index=data['index'])
 
 
+def read_pandapower_file(filename: str) -> npa.HybridCircuit:
+    """
+    Parse pandapower json file into a GridCal MultiCircuit object
+    :param filename: file path
+    :return: MultiCircuit object
+    """
+    grid = npa.HybridCircuit()
+
+    with open(filename) as f:
+        data = json.load(f)
+        data2 = data['_object']
+
+    # buses
+    bus_dict = dict()
+    for i, row in decode_panda_structre(obj=data2['bus']).iterrows():
+        name = 'sub_{}'.format(i)
+
+        bus = npa.CalculationNode(uuid='',
+                                  secondary_id='',
+                                  name=name,
+                                  active_default=int(row['in_service']),
+                                  nominal_voltage=row['vn_kv'],
+                                  vm_min=row['min_vm_pu'],
+                                  vm_max=row['max_vm_pu'])
+        bus_dict[i] = bus
+        grid.addCalculationNode(bus)
+
+    # loads
+    for i, row in decode_panda_structre(obj=data2['load']).iterrows():
+        bus = bus_dict[row['bus']]
+
+        name = "load_{0}_{1}".format(row['bus'], i)
+
+        load = npa.Load(uuid='',
+                        secondary_id='',
+                        name=name,
+                        active_default=int(row['in_service']),
+                        P=row['p_mw'] * row['scaling'],
+                        Q=row['q_mvar'] * row['scaling'],
+                        calc_node=bus)
+
+        grid.addLoad(load)
+
+    # shunt
+    for i, row in decode_panda_structre(obj=data2['shunt']).iterrows():
+        bus = bus_dict[row['bus']]
+
+        cap = npa.Capacitor(uuid='',
+                            secondary_id='',
+                            name=str(row['name']),
+                            active_default=int(row['in_service']),
+                            G=row['p_mw'],
+                            B=row['q_mvar'],
+                            calc_node=bus)
+
+        grid.addCapacitor(cap)
+
+    # generators
+    for i, row in decode_panda_structre(obj=data2['gen']).iterrows():
+
+        bus = bus_dict[row['bus']]
+        name = "gen_{0}_{1}".format(row['bus'], i)
+
+        if row['slack']:
+            bus.slack = True
+
+        gen = npa.Generator(uuid='',
+                            secondary_id='',
+                            name=name,
+                            active_default=int(row['in_service']),
+                            P=row['p_mw'] * row['scaling'],
+                            Vset=row['vm_pu'],
+                            Pmin=row['min_p_mw'],
+                            Pmax=row['max_p_mw'],
+                            Qmin=row['min_q_mvar'],
+                            Qmax=row['max_q_mvar'],
+                            calc_node=bus)
+
+        grid.addGenerator(gen)
+
+    # lines
+    for i, row in decode_panda_structre(obj=data2['line']).iterrows():
+        bus_f = bus_dict[row['from_bus']]
+        bus_t = bus_dict[row['to_bus']]
+
+        name = 'CryLine {}'.format(i)
+
+        line = npa.AcLine(uuid='',
+                          secondary_id='',
+                          name=name,
+                          active_default=bool(row['in_service']),
+                          calc_node_from=bus_f,
+                          calc_node_to=bus_t)
+
+        # "r_ohm", "x_ohm", "c_nf", "length", "Imax", "freq", "Sbase"
+        line.fill_design_properties(r_ohm=row['r_ohm_per_km'],
+                                    x_ohm=row['x_ohm_per_km'],
+                                    c_nf=row['c_nf_per_km'],
+                                    length=row['length_km'],
+                                    Imax=row['max_i_ka'],
+                                    freq=50.0,
+                                    Sbase=grid.Sbase)
+        grid.addAcLine(line)
+
+    # transformer
+    for i, row in decode_panda_structre(obj=data2['trafo']).iterrows():
+        bus_f = bus_dict[row['lv_bus']]
+        bus_t = bus_dict[row['hv_bus']]
+
+        name = 'Line {}'.format(i)  # transformers are also calles Line apparently
+
+        transformer = npa.Transformer2WFull(uuid='',
+                                            secondary_id='',
+                                            name=name,
+                                            active_default=bool(row['in_service']),
+                                            calc_node_from=bus_f,
+                                            calc_node_to=bus_t,
+                                            Vhigh=row['vn_hv_kv'],
+                                            Vlow=row['vn_lv_kv'],
+                                            rate=row['sn_mva'])
+
+        transformer.fill_design_properties(Pcu=0.0,  # pandapower has no pcu apparently
+                                           Pfe=row['pfe_kw'],
+                                           I0=row['i0_percent'],
+                                           Vsc=row['vk_percent'],
+                                           Sbase=grid.Sbase)
+
+        grid.addTransformers2wFul(transformer)
+
+    # n = len(grid.get_generators())
+    # n += len(grid.get_loads())
+    # n += len(grid.get_shunts())
+    # n += len(grid.get_batteries())
+    # n += len(grid.get_branch_names_wo_hvdc()) * 2
+
+    return grid
+
+
 class NewtonBackend(Backend):
     """
-    INTERNAL
-
-    .. warning:: /!\\\\ Internal, do not use unless you know what you are doing /!\\\\
-
-        If you want to code a backend to use grid2op with another powerflow, you can get inspired
-        from this class. Note However that implies knowing the behaviour
-        of PandaPower.
-
-    This module presents an example of an implementation of a `grid2op.Backend` when using the powerflow
-    implementation "newton" available at `www.advancedgridinsights.com`_ for more details about
-    this backend. This file is provided as an example of a proper :class:`grid2op.Backend.Backend` implementation.
-
-    This backend currently does not work with 3 winding transformers and other exotic object.
-
-    As explained in the `grid2op.Backend` module, every module must inherit the `grid2op.Backend` class.
-
-    This class have more attributes that are used internally for faster information retrieval.
-
-    Attributes
-    ----------
-    prod_pu_to_kv: :class:`numpy.array`, dtype:float
-        The ratio that allow the conversion from pair-unit to kv for the generators
-
-    load_pu_to_kv: :class:`numpy.array`, dtype:float
-        The ratio that allow the conversion from pair-unit to kv for the loads
-
-    lines_or_pu_to_kv: :class:`numpy.array`, dtype:float
-        The ratio that allow the conversion from pair-unit to kv for the origin end of the powerlines
-
-    lines_ex_pu_to_kv: :class:`numpy.array`, dtype:float
-        The ratio that allow the conversion from pair-unit to kv for the extremity end of the powerlines
-
-    p_or: :class:`numpy.array`, dtype:float
-        The active power flowing at the origin end of each powerline
-
-    q_or: :class:`numpy.array`, dtype:float
-        The reactive power flowing at the origin end of each powerline
-
-    v_or: :class:`numpy.array`, dtype:float
-        The voltage magnitude at the origin bus of the powerline
-
-    a_or: :class:`numpy.array`, dtype:float
-        The current flowing at the origin end of each powerline
-
-    p_ex: :class:`numpy.array`, dtype:float
-        The active power flowing at the extremity end of each powerline
-
-    q_ex: :class:`numpy.array`, dtype:float
-        The reactive power flowing at the extremity end of each powerline
-
-    a_ex: :class:`numpy.array`, dtype:float
-        The current flowing at the extremity end of each powerline
-
-    v_ex: :class:`numpy.array`, dtype:float
-        The voltage magnitude at the extremity bus of the powerline
-
-    Examples
-    ---------
-    The only recommended way to use this class is by passing an instance of a Backend into the "make"
-    function of grid2op. Do not attempt to use a backend outside of this specific usage.
-
-    .. code-block:: python
-
-            import grid2op
-            from grid2op.Backend import PandaPowerBackend
-            backend = PandaPowerBackend()
-
-            env = grid2op.make(backend=backend)
-            # and use "env" as any open ai gym environment.
-
+    NewtonBackend
     """
 
     def __init__(self,
@@ -124,96 +193,15 @@ class NewtonBackend(Backend):
                          dist_slack=dist_slack,
                          max_iter=max_iter)
 
-        self.prod_pu_to_kv = None
-        self.load_pu_to_kv = None
-        self.lines_or_pu_to_kv = None
-        self.lines_ex_pu_to_kv = None
-        self.storage_pu_to_kv = None
+        # maximum number of iterations for the power flow
+        self.max_iter = max_iter
 
-        self.p_or = None
-        self.q_or = None
-        self.v_or = None
-        self.a_or = None
-        self.p_ex = None
-        self.q_ex = None
-        self.v_ex = None
-        self.a_ex = None
+        # use distributed slack?
+        self.distributed_slack = dist_slack
 
-        self.load_p = None
-        self.load_q = None
-        self.load_v = None
-
-        self.storage_p = None
-        self.storage_q = None
-        self.storage_v = None
-
-        self.prod_p = None
-        self.prod_q = None
-        self.prod_v = None
-        self.line_status = None
-
-        self._pf_init = "flat"
-        self._pf_init = "results"
-        self._nb_bus_before = None  # number of active bus at the preceeding step
-
-        self.thermal_limit_a = None
-
-        self._iref_slack = None
-        self._id_bus_added = None
-        self._fact_mult_gen = -1
-        self._what_object_where = None
-        self._number_true_line = -1
-        self._corresp_name_fun = {}
-        self._get_vector_inj = {}
-        self.dim_topo = -1
-        self._vars_action = BaseAction.attr_list_vect
-        self._vars_action_set = BaseAction.attr_list_vect
-        self.cst_1 = dt_float(1.0)
-        self._topo_vect = None
-        self.slack_id = None
-
-        # function to rstore some information
-        self.__nb_bus_before = None  # number of substation in the powergrid
-        self.__nb_powerline = (
-            None  # number of powerline (real powerline, not transformer)
-        )
-        self._init_bus_load = None
-        self._init_bus_gen = None
-        self._init_bus_lor = None
-        self._init_bus_lex = None
-        self._get_vector_inj = None
-        self._big_topo_to_obj = None
-        self._big_topo_to_backend = None
-        self.__pp_backend_initial_grid = None  # initial state to facilitate the "reset"
-
-        # Mapping some fun to apply bus updates
-        self._type_to_bus_set = [
-            # self._apply_load_bus,
-            # self._apply_gen_bus,
-            # self._apply_lor_bus,
-            # self._apply_trafo_hv,
-            # self._apply_lex_bus,
-            # self._apply_trafo_lv,
-        ]
-
-        self.tol = None  # this is NOT the pandapower tolerance !!!! this is used to check if a storage unit
-        # produce / absorbs anything
-
-        # TODO storage doc (in grid2op rst) of the backend
-        self.can_output_theta = True  # I support the voltage angle
-        self.theta_or = None
-        self.theta_ex = None
-        self.load_theta = None
-        self.gen_theta = None
-        self.storage_theta = None
-
-        self._dist_slack = dist_slack
-        self._max_iter = max_iter
-
-        self.pf_options = newtonpa.PowerFlowOptions(max_iter=max_iter)
-        self._grid: Union[newtonpa.HybridCircuit, None] = None
-        self.numerical_circuit: Union[newtonpa.NumericCircuit, None] = None
-        self.results: Union[newtonpa.PowerFlowResults, None] = None
+        self._grid: Union[npa.HybridCircuit, None] = None
+        self.numerical_circuit: Union[npa.NumericCircuit, None] = None
+        self.results: Union[npa.PowerFlowResults, None] = None
 
     def get_theta(self):
         """
@@ -233,13 +221,21 @@ class NewtonBackend(Backend):
             Gives the voltage angle (in degree) to the bus at which each storage unit is connected
         """
 
-        return (
-            self.cst_1 * self.theta_or,
-            self.cst_1 * self.theta_ex,
-            self.cst_1 * self.load_theta,
-            self.cst_1 * self.gen_theta,
-            self.cst_1 * self.storage_theta,
-        )
+        if self.results:
+            theta = np.angle(self.results.voltage, deg=True)
+            theta_f = self.numerical_circuit.branch_data.C_branch_bus_f * theta
+            theta_t = self.numerical_circuit.branch_data.C_branch_bus_t * theta
+            theta_load = theta * self.numerical_circuit.load_data.C
+            theta_gen = theta * self.numerical_circuit.generator_data.C
+            theta_bat = theta * self.numerical_circuit.battery_data.C
+        else:
+            theta_f = np.zeros(self.numerical_circuit.nbr)
+            theta_t = np.zeros(self.numerical_circuit.nbr)
+            theta_load = np.zeros(self.numerical_circuit.nload)
+            theta_gen = np.zeros(self.numerical_circuit.ngen)
+            theta_bat = np.zeros(self.numerical_circuit.nbatt)
+
+        return theta_f, theta_t, theta_load, theta_gen, theta_bat
 
     def reset(self, path=None, grid_filename=None):
         """
@@ -249,7 +245,35 @@ class NewtonBackend(Backend):
 
         Reload the grid.
         """
-        self.numerical_circuit = newtonpa.compileAt(circuit=self._grid, t=0)
+        self.numerical_circuit = npa.compileAt(circuit=self._grid, t=0)
+
+    def initiailize_or_update_internals(self):
+        """
+        Initialize / Update things after loading / copying
+        """
+        # and now initialize the attributes (see list bellow)
+        self.n_line = self.numerical_circuit.branch_data.nelm  # number of lines in the grid should be read from self._grid
+        self.n_gen = self.numerical_circuit.generator_data.nelm  # number of generators in the grid should be read from self._grid
+        self.n_load = self.numerical_circuit.load_data.nelm  # number of generators in the grid should be read from self._grid
+        self.n_sub = self.numerical_circuit.bus_data.nelm  # number of generators in the grid should be read from self._grid
+
+        # other attributes should be read from self._grid (see table below for a full list of the attributes)
+        self.load_to_subid = self.numerical_circuit.load_data.get_calc_node_indices()
+        self.gen_to_subid = self.numerical_circuit.generator_data.get_calc_node_indices()
+        self.line_or_to_subid = self.numerical_circuit.branch_data.F
+        self.line_ex_to_subid = self.numerical_circuit.branch_data.T
+
+        # naming
+        self.name_load = self.numerical_circuit.load_data.names
+        self.name_gen = self.numerical_circuit.generator_data.names
+        self.name_line = self.numerical_circuit.branch_data.names
+        self.name_sub = self.numerical_circuit.bus_data.names
+
+        # and finish the initialization with a call to this function
+        self._compute_pos_big_topo()
+
+        # the initial thermal limit
+        self.thermal_limit_a = self.numerical_circuit.branch_data.rates
 
     def load_grid(self, path=None, filename=None):
         """
@@ -262,24 +286,14 @@ class NewtonBackend(Backend):
         are set as "out of service" unless a topological action acts on these specific substations.
 
         """
-        self._grid = newtonpa.HybridCircuit()
+        # parse the pandapower json file
+        self._grid = read_pandapower_file(filename=path)
 
-        with open(path) as f:
-            data = json.load(f)
-            data2 = data['_object']
+        # compile for easy numerical access
+        self.numerical_circuit = npa.compileAt(circuit=self._grid, t=0)
 
-        # buses
-        for i, row in decode_panda_structre(obj=data2['bus']).iterrows():
-            self._grid.addCalculationNode(newtonpa.CalculationNode(uuid='',
-                                                                   secondary_id='',
-                                                                   name=str(row['name']),
-                                                                   time_steps=1,
-                                                                   active_default=1,
-                                                                   nominal_voltage=row['vn_kv'],
-                                                                   vm_min=row['min_vm_pu'],
-                                                                   vm_max=row['max_vm_pu']))
-
-        self.numerical_circuit = newtonpa.compileAt(circuit=self._grid, t=0)
+        # initilize internals
+        self.initiailize_or_update_internals()
 
     def storage_deact_for_backward_comaptibility(self):
         """
@@ -297,7 +311,7 @@ class NewtonBackend(Backend):
         your backend.
         """
 
-        # TODO: sanpen: WTF is this?
+        # TODO: sanpen: what is this?
 
         pass
 
@@ -312,8 +326,6 @@ class NewtonBackend(Backend):
         if backendAction is None:
             return
 
-        cls = type(self)
-
         (
             active_bus,
             (prod_p, prod_v, load_p, load_q, storage),
@@ -321,80 +333,32 @@ class NewtonBackend(Backend):
             shunts__,
         ) = backendAction()
 
-        # handle bus status
-        bus_is = self._grid.bus["in_service"]
-        # TODO: what is this? why are there 2 buses?
+        # buses
         for i, (bus1_status, bus2_status) in enumerate(active_bus):
-            bus_is[i] = bus1_status  # no iloc for bus, don't ask me why please :-/
-            bus_is[i + self.__nb_bus_before] = bus2_status
-            # self.numerical_circuit.bus_data.setActiveAt()
+            # TODO: what is this? why are there 2 buses?
+            self.numerical_circuit.bus_data.setActiveAt(i, bus1_status)
 
-        # tmp_prod_p = self._get_vector_inj["prod_p"](self._grid)
-        if prod_p.changed.any():
-            # tmp_prod_p.iloc[prod_p.changed] = prod_p.values[prod_p.changed]
-            self.numerical_circuit.generator_data.P = prod_p.values
+        # generators
+        for i, (changed, p) in enumerate(zip(prod_p.changed, prod_p.values)):
+            if changed:
+                self.numerical_circuit.generator_data.setPAt(i, p)
 
-        tmp_prod_v = self._get_vector_inj["prod_v"](self._grid)
-        if prod_v.changed.any():
-            # tmp_prod_v.iloc[prod_v.changed] = (
-            #         prod_v.values[prod_v.changed] / self.prod_pu_to_kv[prod_v.changed]
-            # )
-            self.numerical_circuit.generator_data.vset = prod_v.values
+        # batteries
+        for i, (changed, p) in enumerate(zip(storage.changed, storage.values)):
+            if changed:
+                self.numerical_circuit.battery_data.setPAt(i, p)
 
-        # todo: add buses on the fly? highly sus
-        if self._id_bus_added is not None and prod_v.changed[self._id_bus_added]:
-            # handling of the slack bus, where "2" generators are present.
-            self._grid["ext_grid"]["vm_pu"] = 1.0 * tmp_prod_v[self._id_bus_added]
+        # loads
+        for i, (changed_p, p, changed_q, q) in enumerate(zip(load_p.changed, load_p.values,
+                                                             load_q.changed, load_q.values)):
+            if changed_p:
+                self.numerical_circuit.load_data.setPAt(i, p)
+            if changed_q:
+                self.numerical_circuit.load_data.setQAt(i, q)
 
-        if load_p.changed.any():
-            self.numerical_circuit.load_data.P = load_p.values
+        # TODO: what about shunts?
 
-        if load_q.changed.any():
-            self.numerical_circuit.load_data.Q = load_q.values
-
-        if self.n_storage:
-
-            # active setpoint
-            if storage.changed.any():
-                self.numerical_circuit.battery_data.P = storage.values
-
-            # topology of the storage
-            stor_bus = backendAction.get_storages_bus()
-            new_bus_id = stor_bus.values[stor_bus.changed]  # id of the busbar 1 or 2 if
-            activated = new_bus_id > 0  # mask of storage that have been activated
-            new_bus_num = self.storage_to_subid[stor_bus.changed] + (new_bus_id - 1) * self.n_sub  # bus number
-            new_bus_num[~activated] = self.storage_to_subid[stor_bus.changed][~activated]
-            self._grid.storage["in_service"].values[stor_bus.changed] = activated
-            self._grid.storage["bus"].values[stor_bus.changed] = new_bus_num
-            self._topo_vect[self.storage_pos_topo_vect[stor_bus.changed]] = new_bus_num
-            self._topo_vect[self.storage_pos_topo_vect[stor_bus.changed][~activated]] = -1
-
-        if type(backendAction).shunts_data_available:
-            shunt_p, shunt_q, shunt_bus = shunts__
-
-            if (shunt_p.changed).any():
-                self._grid.shunt["p_mw"].iloc[shunt_p.changed] = shunt_p.values[
-                    shunt_p.changed
-                ]
-            if (shunt_q.changed).any():
-                self._grid.shunt["q_mvar"].iloc[shunt_q.changed] = shunt_q.values[
-                    shunt_q.changed
-                ]
-            if (shunt_bus.changed).any():
-                sh_service = shunt_bus.values[shunt_bus.changed] != -1
-                self._grid.shunt["in_service"].iloc[shunt_bus.changed] = sh_service
-                chg_and_in_service = sh_service & shunt_bus.changed
-                self._grid.shunt["bus"].loc[chg_and_in_service] = cls.local_bus_to_global(
-                    shunt_bus.values[chg_and_in_service],
-                    cls.shunt_to_subid[chg_and_in_service])
-
-        # i made at least a real change, so i implement it in the backend
-        for id_el, new_bus in topo__:
-            id_el_backend, id_topo, type_obj = self._big_topo_to_backend[id_el]
-
-            if type_obj is not None:
-                # storage unit are handled elsewhere
-                self._type_to_bus_set[type_obj](new_bus, id_el_backend, id_topo)
+        # TODO: what about topology?
 
     def runpf(self, is_dc=False):
         """
@@ -407,9 +371,35 @@ class NewtonBackend(Backend):
         buses has not changed between two calls, the previous results are re used. This speeds up the computation
         in case of "do nothing" action applied.
         """
-        newtonpa.runSingleTimePowerFlow(numeric_circuit=self.numerical_circuit,
-                                        pf_options=self.pf_options,
-                                        V0=None)
+
+        """
+        solver_type: newtonpa.SolverType = <SolverType.NR: 0>, 
+        retry_with_other_methods: bool = True, 
+        verbose: bool = False, 
+        initialize_with_existing_solution: bool = False, 
+        tolerance: float = 1e-06, 
+        max_iter: int = 15, 
+        control_q_mode: newtonpa.ReactivePowerControlMode = <ReactivePowerControlMode.NoControl: 0>, 
+        tap_control_mode: newtonpa.TapsControlMode = <TapsControlMode.NoControl: 0>, 
+        distributed_slack: bool = False, 
+        ignore_single_node_islands: bool = False, 
+        correction_parameter: float = 0.5, 
+        mu0: float = 1.0) -> None
+        """
+
+        # power flow options
+        pf_options = npa.PowerFlowOptions(max_iter=self.max_iter,
+                                          distributed_slack=self.distributed_slack,
+                                          solver_type=npa.SolverType.DC if is_dc else npa.SolverType.NR,
+                                          retry_with_other_methods=True)
+
+        # run the power flow
+        self.results = npa.runSingleTimePowerFlow(numeric_circuit=self.numerical_circuit,
+                                                  pf_options=pf_options,
+                                                  V0=None)
+
+        # return the status
+        return self.results.converged, None
 
     def assert_grid_correct(self):
         """
@@ -429,7 +419,14 @@ class NewtonBackend(Backend):
 
         Performs a deep copy of the power :attr:`_grid`.
         """
-        return self._grid.copy()
+        # unattended copy
+        tmp_ = self._grid.copy()
+        self._grid = None
+        res = copy.deepcopy(self)
+        res._grid = tmp_
+        self._grid = tmp_
+
+        return res
 
     def close(self):
         """
@@ -455,7 +452,7 @@ class NewtonBackend(Backend):
         :param full_path:
         :return:
         """
-        newtonpa.FileHandler().save(circuit=self._grid, file_name=full_path)
+        npa.FileHandler().save(circuit=self._grid, file_name=full_path)
 
     def get_line_status(self):
         """
@@ -465,10 +462,10 @@ class NewtonBackend(Backend):
 
         As all the functions related to powerline,
         """
-        return self.numerical_circuit.branch_data.active
+        return self.numerical_circuit.branch_data.active.astype(bool)
 
     def get_line_flow(self):
-        return self.results.Sf
+        return self.results.Sf.real[0, :]
 
     def _disconnect_line(self, id_):
         self.numerical_circuit.branch_data.active[id_] = 0
@@ -477,68 +474,137 @@ class NewtonBackend(Backend):
         self.numerical_circuit.branch_data.active[id_] = 1
 
     def get_topo_vect(self):
-        return self._topo_vect
+        # n = self.numerical_circuit.generator_data.nelm
+        # n += self.numerical_circuit.load_data.nelm
+        # n += self.numerical_circuit.shunt_data.nelm
+        # n += self.numerical_circuit.branch_data.nelm * 2
+        # n += self.numerical_circuit.battery_data.nelm
+        # bus_idx, gen_idx, load_idx, shunt_idx, line_idx, storage_idx
+
+        # declare a list for each bus
+        data = {i: list() for i in range(self.numerical_circuit.bus_data.nelm)}
+
+        # for each monopole structure ...
+        for struct in [self.numerical_circuit.generator_data,
+                       self.numerical_circuit.load_data,
+                       # self.numerical_circuit.shunt_data  # shunts don't count
+                       ]:
+            for i, bus_idx in enumerate(struct.get_calc_node_indices()):
+                data[bus_idx].append(i)
+
+        # for each dipole structure ...
+        for i, (f, t) in enumerate(zip(self.numerical_circuit.branch_data.F, self.numerical_circuit.branch_data.T)):
+            data[f].append(i)
+            data[t].append(t)
+
+        # repeat for the battery data to have the same indexing ...
+        for struct in [self.numerical_circuit.battery_data]:
+            for i, bus_idx in enumerate(struct.get_calc_node_indices()):
+                data[bus_idx].append(i)
+
+        # arrange elements in order
+        lst2 = list()
+        for bus_idx in range(self.numerical_circuit.bus_data.nelm):
+            lst2 += data[bus_idx]
+
+        return np.array(lst2)
 
     def generators_info(self):
-        return (
-            self.cst_1 * self.prod_p,
-            self.cst_1 * self.prod_q,
-            self.cst_1 * self.prod_v,
-        )
+        if self.results:
+            Vm = np.abs(self.results.voltage[0, :] * self.numerical_circuit.bus_data.Vnom)
+            P = self.numerical_circuit.generator_data.P
+            Q = np.abs(self.results.Scalc[0, :].imag) * self.numerical_circuit.generator_data.C
+            V = Vm * self.numerical_circuit.generator_data.C
+        else:
+            n = self.numerical_circuit.generator_data.nelm
+            P = np.zeros(n)
+            Q = np.zeros(n)
+            V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.generator_data.C
+
+        return P, Q, V
 
     def loads_info(self):
-        return (
-            self.cst_1 * self.load_p,
-            self.cst_1 * self.load_q,
-            self.cst_1 * self.load_v,
-        )
+        if self.results:
+            Vm = np.abs(self.results.voltage[0, :] * self.numerical_circuit.bus_data.Vnom)
+            P = self.numerical_circuit.load_data.S.real
+            Q = self.numerical_circuit.load_data.S.imag
+            V = Vm * self.numerical_circuit.load_data.C
+
+        else:
+            n = self.numerical_circuit.load_data.nelm
+            P = np.zeros(n)
+            Q = np.zeros(n)
+            V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.load_data.C
+
+        return P, Q, V
 
     def lines_or_info(self):
-        return (
-            self.cst_1 * self.p_or,
-            self.cst_1 * self.q_or,
-            self.cst_1 * self.v_or,
-            self.cst_1 * self.a_or,
-        )
+        if self.results:
+            Vm = np.abs(self.results.voltage[0, :] * self.numerical_circuit.bus_data.Vnom)
+            P = self.results.Sf[0, :].real  # MW
+            Q = self.results.Sf[0, :].imag  # MVAr
+            V = self.numerical_circuit.branch_data.Cf * Vm  # kV
+            A = self.numerical_circuit.branch_data.F
+
+        else:
+            n = self.numerical_circuit.branch_data.nelm
+            P = np.zeros(n)  # MW
+            Q = np.zeros(n)  # MVAr
+            V = self.numerical_circuit.branch_data.Cf * self.numerical_circuit.bus_data.Vnom  # kV
+            A = self.numerical_circuit.branch_data.F
+
+        return P, Q, V, A
 
     def lines_ex_info(self):
-        return (
-            self.cst_1 * self.p_ex,
-            self.cst_1 * self.q_ex,
-            self.cst_1 * self.v_ex,
-            self.cst_1 * self.a_ex,
-        )
+        if self.results:
+            Vm = np.abs(self.results.voltage[0, :] * self.numerical_circuit.bus_data.Vnom)
+            P = self.results.St[0, :].real  # MW
+            Q = self.results.St[0, :].imag  # MVAr
+            V = self.numerical_circuit.branch_data.Ct * Vm  # kV
+            A = self.numerical_circuit.branch_data.T
+
+        else:
+            n = self.numerical_circuit.branch_data.nelm
+            P = np.zeros(n)  # MW
+            Q = np.zeros(n)  # MVAr
+            V = self.numerical_circuit.branch_data.Ct * self.numerical_circuit.bus_data.Vnom  # kV
+            A = self.numerical_circuit.branch_data.T
+
+        return P, Q, V, A
 
     def shunt_info(self):
-        shunt_p = self.cst_1 * self._grid.res_shunt["p_mw"].values.astype(dt_float)
-        shunt_q = self.cst_1 * self._grid.res_shunt["q_mvar"].values.astype(dt_float)
-        shunt_v = (
-            self._grid.res_bus["vm_pu"]
-            .loc[self._grid.shunt["bus"].values]
-            .values.astype(dt_float)
-        )
-        shunt_v *= (
-            self._grid.bus["vn_kv"]
-            .loc[self._grid.shunt["bus"].values]
-            .values.astype(dt_float)
-        )
-        shunt_bus = type(self).global_bus_to_local(self._grid.shunt["bus"].values, self.shunt_to_subid)
-        shunt_v[~self._grid.shunt["in_service"].values] = 0
-        shunt_bus[~self._grid.shunt["in_service"].values] = -1
-        # handle shunt alone on a bus (in this case it should probably diverge...)
-        alone = ~np.isfinite(shunt_v)
-        shunt_v[alone] = 0
-        shunt_bus[alone] = -1
-        return shunt_p, shunt_q, shunt_v, shunt_bus
+        if self.results:
+            Vm = np.abs(self.results.voltage[0, :] * self.numerical_circuit.bus_data.Vnom)
+            P = self.results.Scalc.real[0, :] * self.numerical_circuit.shunt_data.C  # MW
+            Q = self.results.Scalc.imag[0, :] * self.numerical_circuit.shunt_data.C  # MVAr
+            V = Vm * self.numerical_circuit.shunt_data.C  # kV
+            A = self.numerical_circuit.shunt_data.get_bus_indices()
+
+        else:
+            n = self.numerical_circuit.shunt_data.nelm
+            P = np.zeros(n)  # MW
+            Q = np.zeros(n)  # MVAr
+            V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.shunt_data.C  # kV
+            A = self.numerical_circuit.shunt_data.get_bus_indices()
+
+        return P, Q, V, A
 
     def storages_info(self):
-        return (
-            self.cst_1 * self.storage_p,
-            self.cst_1 * self.storage_q,
-            self.cst_1 * self.storage_v,
-        )
+        if self.results:
+            Vm = np.abs(self.results.voltage[0, :] * self.numerical_circuit.bus_data.Vnom)
+            P = self.numerical_circuit.battery_data.p
+            Q = np.abs(self.results.Scalc[0, :].imag) * self.numerical_circuit.battery_data.C
+            V = Vm * self.numerical_circuit.battery_data.C
+        else:
+            n = self.numerical_circuit.battery_data.nelm
+            P = np.zeros(n)
+            Q = np.zeros(n)
+            V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.battery_data.C
+
+        return P, Q, V
 
     def sub_from_bus_id(self, bus_id):
-        if bus_id >= self._number_true_line:
-            return bus_id - self._number_true_line
+        # TODO: what to do here?
+        # if bus_id >= self._number_true_line:
+        #     return bus_id - self._number_true_line
         return bus_id
