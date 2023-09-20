@@ -15,10 +15,7 @@ import pandas as pd
 import copy
 from typing import Union
 
-from grid2op.dtypes import dt_int, dt_float, dt_bool
 from grid2op.Backend.backend import Backend
-from grid2op.Action import BaseAction
-from grid2op.Exceptions import *
 
 import GridCalEngine.Core.Devices as dev
 import GridCalEngine.Simulations as sim
@@ -55,12 +52,12 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
     bus_dict = dict()
     for i, row in decode_panda_structre(obj=data2['bus']).iterrows():
 
-        name = str(i+1)
+        name = 'sub_{}'.format(i)
 
         bus = dev.Bus(idtag='',
                       code='',
                       name=name,
-                      active=True,
+                      active=bool(row['in_service']),
                       vnom=row['vn_kv'],
                       vmin=row['min_vm_pu'],
                       vmax=row['max_vm_pu'])
@@ -76,7 +73,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         grid.add_load(bus, dev.Load(idtag='',
                                     code='',
                                     name=name,
-                                    active=True,
+                                    active=bool(row['in_service']),
                                     P=row['p_mw'] * row['scaling'],
                                     Q=row['q_mvar'] * row['scaling']))
 
@@ -86,7 +83,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         grid.add_shunt(bus, dev.Shunt(idtag='',
                                       code='',
                                       name=str(row['name']),
-                                      active=True,
+                                      active=bool(row['in_service']),
                                       G=row['p_mw'],
                                       B=row['q_mvar']))
 
@@ -102,7 +99,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         grid.add_generator(bus, dev.Generator(idtag='',
                                               code='',
                                               name=name,
-                                              active=True,
+                                              active=bool(row['in_service']),
                                               P=row['p_mw'] * row['scaling'],
                                               vset=row['vm_pu'],
                                               Pmin=row['min_p_mw'],
@@ -120,7 +117,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         line = dev.Line(idtag='',
                         code='',
                         name=name,
-                        active=True,
+                        active=bool(row['in_service']),
                         bus_from=bus_f,
                         bus_to=bus_t)
 
@@ -143,7 +140,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         transformer = dev.Transformer2W(idtag='',
                                         code='',
                                         name=name,
-                                        active=True,
+                                        active=bool(row['in_service']),
                                         bus_from=bus_f,
                                         bus_to=bus_t,
                                         HV=row['vn_hv_kv'],
@@ -157,6 +154,12 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
                                            Sbase=grid.Sbase)
 
         grid.add_transformer2w(transformer)
+
+    # n = len(grid.get_generators())
+    # n += len(grid.get_loads())
+    # n += len(grid.get_shunts())
+    # n += len(grid.get_batteries())
+    # n += len(grid.get_branch_names_wo_hvdc()) * 2
 
     return grid
 
@@ -336,8 +339,6 @@ class GridCalBackend(Backend):
         # self._dist_slack = dist_slack
         # self._max_iter = max_iter
 
-        self._topo_vect = None
-
         self.pf_options = sim.PowerFlowOptions(max_iter=max_iter, distributed_slack=dist_slack)
         self._grid: Union[MultiCircuit, None] = None
         self.numerical_circuit: Union[NumericalCircuit, None] = None
@@ -493,7 +494,6 @@ class GridCalBackend(Backend):
         # TODO: what about shunts?
 
         # TODO: what about topology?
-        self._topo_vect = topo__  # TODO is this correct?
 
     def runpf(self, is_dc=False):
         """
@@ -583,8 +583,45 @@ class GridCalBackend(Backend):
         self.numerical_circuit.branch_data.active[id_] = 1
 
     def get_topo_vect(self):
-        # todo: what to do here?
-        return self._topo_vect
+        """
+        Compose or get topo_vect
+        the size should agree with the rows of type(self).grid_objects_types
+        :return:
+        """
+        # n = self.numerical_circuit.generator_data.nelm
+        # n += self.numerical_circuit.load_data.nelm
+        # n += self.numerical_circuit.shunt_data.nelm
+        # n += self.numerical_circuit.branch_data.nelm * 2
+        # n += self.numerical_circuit.battery_data.nelm
+        # bus_idx, gen_idx, load_idx, shunt_idx, line_idx, storage_idx
+
+        # declare a list for each bus
+        data = {i: list() for i in range(self.numerical_circuit.nbus)}
+
+        # for each monopole structure ...
+        for struct in [self.numerical_circuit.generator_data,
+                       self.numerical_circuit.load_data,
+                       # self.numerical_circuit.shunt_data  # shunts don't count
+                       ]:
+            for i, bus_idx in enumerate(struct.get_bus_indices()):
+                data[bus_idx].append(i)
+
+        # for each dipole structure ...
+        for i, (f, t) in enumerate(zip(self.numerical_circuit.branch_data.F, self.numerical_circuit.branch_data.T)):
+            data[f].append(i)
+            data[t].append(t)
+
+        # repeat for the battery data to have the same indexing ...
+        for struct in [self.numerical_circuit.battery_data]:
+            for i, bus_idx in enumerate(struct.get_bus_indices()):
+                data[bus_idx].append(i)
+
+        # arrange elements in order
+        lst2 = list()
+        for bus_idx in range(self.numerical_circuit.nbus):
+            lst2 += data[bus_idx]
+
+        return np.array(lst2)
 
     def generators_info(self):
         if self.results:
@@ -603,7 +640,7 @@ class GridCalBackend(Backend):
         if self.results:
             Vm = np.abs(self.results.voltage * self.numerical_circuit.bus_data.Vnom)
             P = self.numerical_circuit.load_data.S.real
-            Q = self.numerical_circuit.load_data.S.imag,
+            Q = self.numerical_circuit.load_data.S.imag
             V = Vm * self.numerical_circuit.load_data.C_bus_elm
 
         else:
