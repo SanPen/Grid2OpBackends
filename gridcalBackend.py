@@ -54,9 +54,12 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
     # buses
     bus_dict = dict()
     for i, row in decode_panda_structre(obj=data2['bus']).iterrows():
+
+        name = str(i+1)
+
         bus = dev.Bus(idtag='',
                       code='',
-                      name=str(row['name']),
+                      name=name,
                       active=True,
                       vnom=row['vn_kv'],
                       vmin=row['min_vm_pu'],
@@ -333,11 +336,12 @@ class GridCalBackend(Backend):
         # self._dist_slack = dist_slack
         # self._max_iter = max_iter
 
-        self.pf_options = sim.PowerFlowOptions(max_iter=max_iter)
+        self._topo_vect = None
+
+        self.pf_options = sim.PowerFlowOptions(max_iter=max_iter, distributed_slack=dist_slack)
         self._grid: Union[MultiCircuit, None] = None
         self.numerical_circuit: Union[NumericalCircuit, None] = None
         self.results: Union[sim.PowerFlowResults, None] = None
-        self.Vnom = np.zeros(0)
 
     def get_theta(self):
         """
@@ -357,13 +361,21 @@ class GridCalBackend(Backend):
             Gives the voltage angle (in degree) to the bus at which each storage unit is connected
         """
 
-        return (
-            self.cst_1 * self.theta_or,
-            self.cst_1 * self.theta_ex,
-            self.cst_1 * self.load_theta,
-            self.cst_1 * self.gen_theta,
-            self.cst_1 * self.storage_theta,
-        )
+        if self.results:
+            theta = np.angle(self.results.voltage, deg=True)
+            theta_f = self.numerical_circuit.branch_data.C_branch_bus_f * theta
+            theta_t = self.numerical_circuit.branch_data.C_branch_bus_t * theta
+            theta_load = theta * self.numerical_circuit.load_data.C_bus_elm
+            theta_gen = theta * self.numerical_circuit.generator_data.C_bus_elm
+            theta_bat = theta * self.numerical_circuit.battery_data.C_bus_elm
+        else:
+            theta_f = np.zeros(self.numerical_circuit.nbr)
+            theta_t = np.zeros(self.numerical_circuit.nbr)
+            theta_load = np.zeros(self.numerical_circuit.nload)
+            theta_gen = np.zeros(self.numerical_circuit.ngen)
+            theta_bat = np.zeros(self.numerical_circuit.nbatt)
+
+        return theta_f, theta_t, theta_load, theta_gen, theta_bat
 
     def reset(self, path=None, grid_filename=None):
         """
@@ -411,9 +423,6 @@ class GridCalBackend(Backend):
         self.name_line = self.numerical_circuit.branch_data.names
         self.name_sub = self.numerical_circuit.bus_data.names
 
-        # gather the nominal voltages array (kV)
-        self.Vnom = np.array([b.Vnom for b in self._grid.buses])
-
         # and finish the initialization with a call to this function
         self._compute_pos_big_topo()
 
@@ -451,8 +460,6 @@ class GridCalBackend(Backend):
         if backendAction is None:
             return
 
-        cls = type(self)
-
         (
             active_bus,
             (prod_p, prod_v, load_p, load_q, storage),
@@ -486,6 +493,7 @@ class GridCalBackend(Backend):
         # TODO: what about shunts?
 
         # TODO: what about topology?
+        self._topo_vect = topo__  # TODO is this correct?
 
     def runpf(self, is_dc=False):
         """
@@ -499,6 +507,8 @@ class GridCalBackend(Backend):
         in case of "do nothing" action applied.
         """
         self.results = multi_island_pf_nc(nc=self.numerical_circuit, options=self.pf_options)
+
+        return self.results.converged, None
 
     def assert_grid_correct(self):
         """
@@ -564,7 +574,7 @@ class GridCalBackend(Backend):
         return self.numerical_circuit.branch_data.active
 
     def get_line_flow(self):
-        return self.results.Sf
+        return self.results.Sf.real
 
     def _disconnect_line(self, id_):
         self.numerical_circuit.branch_data.active[id_] = 0
@@ -573,91 +583,99 @@ class GridCalBackend(Backend):
         self.numerical_circuit.branch_data.active[id_] = 1
 
     def get_topo_vect(self):
+        # todo: what to do here?
         return self._topo_vect
 
     def generators_info(self):
         if self.results:
+            Vm = np.abs(self.results.voltage * self.numerical_circuit.bus_data.Vnom)
             P = self.numerical_circuit.generator_data.p
             Q = np.abs(self.results.Sbus.imag) * self.numerical_circuit.generator_data.C_bus_elm
-            V = np.abs(self.results.voltage * self.Vnom) * self.numerical_circuit.generator_data.C_bus_elm
+            V = Vm * self.numerical_circuit.generator_data.C_bus_elm
         else:
             P = np.zeros(self.numerical_circuit.ngen)
             Q = np.zeros(self.numerical_circuit.ngen)
-            V = self.Vnom * self.numerical_circuit.generator_data.C_bus_elm
+            V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.generator_data.C_bus_elm
 
         return P, Q, V
 
     def loads_info(self):
         if self.results:
+            Vm = np.abs(self.results.voltage * self.numerical_circuit.bus_data.Vnom)
             P = self.numerical_circuit.load_data.S.real
             Q = self.numerical_circuit.load_data.S.imag,
-            V = np.abs(self.results.voltage * self.Vnom) * self.numerical_circuit.load_data.C_bus_elm
+            V = Vm * self.numerical_circuit.load_data.C_bus_elm
 
         else:
             P = np.zeros(self.numerical_circuit.nload)
             Q = np.zeros(self.numerical_circuit.nload)
-            V = self.Vnom * self.numerical_circuit.load_data.C_bus_elm
+            V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.load_data.C_bus_elm
 
         return P, Q, V
 
     def lines_or_info(self):
         if self.results:
+            Vm = np.abs(self.results.voltage * self.numerical_circuit.bus_data.Vnom)
             P = self.results.Sf.real  # MW
             Q = self.results.Sf.imag  # MVAr
-            V = self.numerical_circuit.branch_data.C_branch_bus_f * np.abs(self.results.voltage * self.Vnom)  # kV
+            V = self.numerical_circuit.branch_data.C_branch_bus_f * Vm  # kV
             A = self.numerical_circuit.branch_data.F
 
         else:
             P = np.zeros(self.numerical_circuit.nbr)  # MW
             Q = np.zeros(self.numerical_circuit.nbr)  # MVAr
-            V = self.numerical_circuit.branch_data.C_branch_bus_f * self.Vnom  # kV
+            V = self.numerical_circuit.branch_data.C_branch_bus_f * self.numerical_circuit.bus_data.Vnom  # kV
             A = self.numerical_circuit.branch_data.F
 
         return P, Q, V, A
 
     def lines_ex_info(self):
         if self.results:
+            Vm = np.abs(self.results.voltage * self.numerical_circuit.bus_data.Vnom)
             P = self.results.St.real  # MW
             Q = self.results.St.imag  # MVAr
-            V = self.numerical_circuit.branch_data.C_branch_bus_t * np.abs(self.results.voltage * self.Vnom)  # kV
+            V = self.numerical_circuit.branch_data.C_branch_bus_t * Vm  # kV
             A = self.numerical_circuit.branch_data.T
 
         else:
             P = np.zeros(self.numerical_circuit.nbr)  # MW
             Q = np.zeros(self.numerical_circuit.nbr)  # MVAr
-            V = self.numerical_circuit.branch_data.C_branch_bus_f * self.Vnom  # kV
+            V = self.numerical_circuit.branch_data.C_branch_bus_f * self.numerical_circuit.bus_data.Vnom  # kV
             A = self.numerical_circuit.branch_data.T
 
         return P, Q, V, A
 
     def shunt_info(self):
         if self.results:
+            Vm = np.abs(self.results.voltage * self.numerical_circuit.bus_data.Vnom)
             P = self.results.Sbus.real * self.numerical_circuit.shunt_data.C_bus_elm  # MW
             Q = self.results.Sbus.imag * self.numerical_circuit.shunt_data.C_bus_elm  # MVAr
-            V = np.abs(self.results.voltage * self.Vnom) * self.numerical_circuit.shunt_data.C_bus_elm  # kV
+            V = Vm * self.numerical_circuit.shunt_data.C_bus_elm  # kV
             A = self.numerical_circuit.shunt_data.get_bus_indices()
 
         else:
             P = np.zeros(self.numerical_circuit.nshunt)  # MW
             Q = np.zeros(self.numerical_circuit.nshunt)  # MVAr
-            V = self.Vnom * self.numerical_circuit.shunt_data.C_bus_elm  # kV
+            V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.shunt_data.C_bus_elm  # kV
             A = self.numerical_circuit.shunt_data.get_bus_indices()
 
         return P, Q, V, A
 
     def storages_info(self):
         if self.results:
+            Vm = np.abs(self.results.voltage * self.numerical_circuit.bus_data.Vnom)
             P = self.numerical_circuit.battery_data.p
             Q = np.abs(self.results.Sbus.imag) * self.numerical_circuit.battery_data.C_bus_elm
-            V = np.abs(self.results.voltage * self.Vnom) * self.numerical_circuit.battery_data.C_bus_elm
+            V = Vm * self.numerical_circuit.battery_data.C_bus_elm
         else:
             P = np.zeros(self.numerical_circuit.ngen)
             Q = np.zeros(self.numerical_circuit.ngen)
-            V = self.Vnom * self.numerical_circuit.battery_data.C_bus_elm
+            V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.battery_data.C_bus_elm
 
         return P, Q, V
 
     def sub_from_bus_id(self, bus_id):
-        if bus_id >= self._number_true_line:
-            return bus_id - self._number_true_line
+        # TODO: what to do here?
+        # if bus_id >= self._number_true_line:
+        #     return bus_id - self._number_true_line
         return bus_id
