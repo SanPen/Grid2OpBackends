@@ -341,20 +341,20 @@ class GridCalBackend(Backend):
         # generators
         for i, (changed, p) in enumerate(zip(prod_p.changed, prod_p.values)):
             if changed:
-                self.numerical_circuit.generator_data.P[i] = p
+                self.numerical_circuit.generator_data.p[i] = p
 
         # batteries
         for i, (changed, p) in enumerate(zip(storage.changed, storage.values)):
             if changed:
-                self.numerical_circuit.battery_data.P[i] = p
+                self.numerical_circuit.battery_data.p[i] = p
 
         # loads
         for i, (changed_p, p, changed_q, q) in enumerate(zip(load_p.changed, load_p.values,
                                                              load_q.changed, load_q.values)):
             if changed_p:
-                self.numerical_circuit.load_data.P[i] = p
+                self.numerical_circuit.load_data.S[i].real = p
             if changed_q:
-                self.numerical_circuit.load_data.Q[i] = q
+                self.numerical_circuit.load_data.S[i].imag = q
 
         # TODO: what about shunts?
 

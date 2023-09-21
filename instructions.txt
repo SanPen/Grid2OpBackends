@@ -1,4 +1,11 @@
 
+Install Grid2op from the repositories
+
+git clone https://github.com/rte-france/grid2op.git
+cd grid2op
+pip install -e .
+/home/santi/Documentos/Git/GitHub/Grid2OpBackends/venv/bin/python -m pip install -e .
+
 when creating an envirinment
 
 see: https://github.com/BDonnot/lightsim2grid
