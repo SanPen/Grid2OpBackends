@@ -52,14 +52,15 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
     for i, row in decode_panda_structre(obj=data2['bus']).iterrows():
 
         name = 'sub_{}'.format(i)
-
+        vmin = row['min_vm_pu'] if 'min_vm_pu' in row else 0.8 * row['vn_kv']
+        vmax = row['max_vm_pu'] if 'max_vm_pu' in row else 1.2 * row['vn_kv']
         bus = dev.Bus(idtag='',
                       code='',
                       name=name,
                       active=bool(row['in_service']),
                       vnom=row['vn_kv'],
-                      vmin=row['min_vm_pu'],
-                      vmax=row['max_vm_pu'])
+                      vmin=vmin,
+                      vmax=vmax)
         bus_dict[i] = bus
         grid.add_bus(bus)
 
@@ -94,17 +95,29 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
 
         if row['slack']:
             bus.is_slack = True
-
+        
+        Pmin = row['min_p_mw'] if 'min_p_mw' in row else None
+        Pmax = row['max_p_mw'] if 'max_p_mw' in row else None
+        Qmin = row['min_q_mvar'] if 'min_q_mvar' in row else None
+        Qmax = row['max_q_mvar'] if 'max_q_mvar' in row else None
+        if Pmin is None:
+            Pmin = -999999.
+        if Pmax is None:
+            Pmax = 999999.
+        if Qmin is None:
+            Qmin = -999999.
+        if Qmax is None:
+            Qmax = 999999.
         grid.add_generator(bus, dev.Generator(idtag='',
                                               code='',
                                               name=name,
                                               active=bool(row['in_service']),
                                               P=row['p_mw'] * row['scaling'],
                                               vset=row['vm_pu'],
-                                              Pmin=row['min_p_mw'],
-                                              Pmax=row['max_p_mw'],
-                                              Qmin=row['min_q_mvar'],
-                                              Qmax=row['max_q_mvar'], ))
+                                              Pmin=Pmin,
+                                              Pmax=Pmax,
+                                              Qmin=Qmin,
+                                              Qmax=Qmax, ))
 
     # lines
     for i, row in decode_panda_structre(obj=data2['line']).iterrows():
