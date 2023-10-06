@@ -6,6 +6,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # This file is part of Grid2Op, Grid2Op a testbed platform to model sequential decision making in power systems.
 
+import os
 import json
 import copy
 import numpy as np
@@ -52,14 +53,15 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
     for i, row in decode_panda_structre(obj=data2['bus']).iterrows():
 
         name = 'sub_{}'.format(i)
-
+        vmin = row['min_vm_pu'] if 'min_vm_pu' in row else 0.8 * row['vn_kv']
+        vmax = row['max_vm_pu'] if 'max_vm_pu' in row else 1.2 * row['vn_kv']
         bus = dev.Bus(idtag='',
                       code='',
                       name=name,
                       active=bool(row['in_service']),
                       vnom=row['vn_kv'],
-                      vmin=row['min_vm_pu'],
-                      vmax=row['max_vm_pu'])
+                      vmin=vmin,
+                      vmax=vmax)
         bus_dict[i] = bus
         grid.add_bus(bus)
 
@@ -94,24 +96,37 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
 
         if row['slack']:
             bus.is_slack = True
-
+        
+        Pmin = row['min_p_mw'] if 'min_p_mw' in row else None
+        Pmax = row['max_p_mw'] if 'max_p_mw' in row else None
+        Qmin = row['min_q_mvar'] if 'min_q_mvar' in row else None
+        Qmax = row['max_q_mvar'] if 'max_q_mvar' in row else None
+        if Pmin is None:
+            Pmin = -999999.
+        if Pmax is None:
+            Pmax = 999999.
+        if Qmin is None:
+            Qmin = -999999.
+        if Qmax is None:
+            Qmax = 999999.
         grid.add_generator(bus, dev.Generator(idtag='',
                                               code='',
                                               name=name,
                                               active=bool(row['in_service']),
                                               P=row['p_mw'] * row['scaling'],
                                               vset=row['vm_pu'],
-                                              Pmin=row['min_p_mw'],
-                                              Pmax=row['max_p_mw'],
-                                              Qmin=row['min_q_mvar'],
-                                              Qmax=row['max_q_mvar'], ))
-
+                                              Pmin=Pmin,
+                                              Pmax=Pmax,
+                                              Qmin=Qmin,
+                                              Qmax=Qmax, ))
+            
     # lines
     for i, row in decode_panda_structre(obj=data2['line']).iterrows():
         bus_f = bus_dict[row['from_bus']]
         bus_t = bus_dict[row['to_bus']]
 
-        name = 'CryLine {}'.format(i)
+        # name = 'CryLine {}'.format(i)
+        name = f"{row['from_bus']}_{row['to_bus']}_{i}"
 
         line = dev.Line(idtag='',
                         code='',
@@ -134,8 +149,9 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         bus_f = bus_dict[row['lv_bus']]
         bus_t = bus_dict[row['hv_bus']]
 
-        name = 'Line {}'.format(i)  # transformers are also calles Line apparently
-
+        # name = 'Line {}'.format(i)  # transformers are also calles Line apparently
+        name = f"{row['hv_bus']}_{row['lv_bus']}_{i}"
+        
         transformer = dev.Transformer2W(idtag='',
                                         code='',
                                         name=name,
@@ -286,8 +302,21 @@ class GridCalBackend(Backend):
 
         """
 
+        if path is None and filename is None:
+            raise RuntimeError(
+                "You must provide at least one of path or file to load a powergrid."
+            )
+        if path is None:
+            full_path = filename
+        elif filename is None:
+            full_path = path
+        else:
+            full_path = os.path.join(path, filename)
+        if not os.path.exists(full_path):
+            raise RuntimeError('There is no powergrid at "{}"'.format(full_path))
+        
         # parse the pandapower json file
-        self._grid = read_pandapower_file(filename=path)
+        self._grid = read_pandapower_file(filename=full_path)
 
         # compile for easy numerical access
         self.numerical_circuit = compile_numerical_circuit_at(circuit=self._grid, t_idx=None)
