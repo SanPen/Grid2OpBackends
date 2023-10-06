@@ -9,12 +9,15 @@
 import os
 import json
 import copy
+import warnings
+
 import numpy as np
 import pandas as pd
 from typing import Dict
 from typing import Union
 
 from grid2op.Backend.backend import Backend
+import pandapower as pp
 
 import GridCalEngine.Core.Devices as dev
 import GridCalEngine.Simulations as sim
@@ -36,6 +39,54 @@ def decode_panda_structre(obj: Dict[str, str]) -> pd.DataFrame:
     return pd.DataFrame(data=data['data'], columns=data['columns'], index=data['index'])
 
 
+def _line_name(row, id_obj):
+    return f"{row['from_bus']}_{row['to_bus']}_{id_obj}"
+
+
+def _trafo_name(row, id_obj):
+    return f"{row['hv_bus']}_{row['lv_bus']}_{id_obj}"
+
+
+def _gen_name(row, id_obj):
+    return f"gen_{row['bus']}_{id_obj}"
+
+
+def _load_name(row, id_obj):
+    return f"load_{row['bus']}_{id_obj}"
+
+
+def _storage_name(row, id_obj):
+    return f"storage_{row['bus']}_{id_obj}"
+
+
+def _sub_name(row, id_obj):
+    return f"sub_{id_obj}"
+
+
+def _shunt_name(row, id_obj):
+    return f"shunt_{row['bus']}_{id_obj}"
+
+
+def aux_get_names(grid, grid_attrs):
+    res = []
+    obj_id = 0
+    for (attr, fun_to_name) in grid_attrs:
+        df = getattr(grid, attr)
+        if (
+            "name" in df.columns
+            and not df["name"].isnull().values.any()
+        ):
+            res += [name for name in df["name"]]
+        else:
+            res += [
+                fun_to_name(row, id_obj=obj_id + i)
+                for i, (_, row) in enumerate(df.iterrows())
+            ]
+            obj_id += df.shape[0]
+    res = np.array(res)
+    return res
+
+
 def read_pandapower_file(filename: str) -> MultiCircuit:
     """
     Parse pandapower json file into a GridCal MultiCircuit object
@@ -43,16 +94,24 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
     :return: MultiCircuit object
     """
     grid = MultiCircuit()
-
-    with open(filename) as f:
-        data = json.load(f)
-        data2 = data['_object']
+    
+    # load the grid using pandapower (just for loading utilities, as they store things in some weird format)
+    with warnings.catch_warnings():
+        # remove deprecationg warnings for old version of pandapower
+        warnings.filterwarnings("ignore", category=DeprecationWarning)
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        pp_grid = pp.from_json(filename)
+        
+    # with open(filename) as f:
+    #     data = json.load(f)
+    #     data2 = data['_object']
 
     # buses
     bus_dict = dict()
-    for i, row in decode_panda_structre(obj=data2['bus']).iterrows():
+    sub_names = aux_get_names(pp_grid, [("bus", _sub_name)])
+    for i, row in pp_grid.bus.iterrows():
 
-        name = 'sub_{}'.format(i)
+        name = sub_names[i]
         vmin = row['min_vm_pu'] if 'min_vm_pu' in row else 0.8 * row['vn_kv']
         vmax = row['max_vm_pu'] if 'max_vm_pu' in row else 1.2 * row['vn_kv']
         bus = dev.Bus(idtag='',
@@ -66,10 +125,11 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         grid.add_bus(bus)
 
     # loads
-    for i, row in decode_panda_structre(obj=data2['load']).iterrows():
+    load_names = aux_get_names(pp_grid, [("load", _load_name)])
+    for i, row in pp_grid.load.iterrows():
         bus = bus_dict[row['bus']]
 
-        name = "load_{0}_{1}".format(row['bus'], i)
+        name = load_names[i]
 
         grid.add_load(bus, dev.Load(idtag='',
                                     code='',
@@ -79,20 +139,22 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
                                     Q=row['q_mvar'] * row['scaling']))
 
     # shunt
-    for i, row in decode_panda_structre(obj=data2['shunt']).iterrows():
+    shunt_names = aux_get_names(pp_grid, [("shunt", _shunt_name)])
+    for i, row in  pp_grid.shunt.iterrows():
         bus = bus_dict[row['bus']]
         grid.add_shunt(bus, dev.Shunt(idtag='',
                                       code='',
-                                      name=str(row['name']),
+                                      name=shunt_names[i],
                                       active=bool(row['in_service']),
                                       G=row['p_mw'],
                                       B=row['q_mvar']))
 
     # generators
-    for i, row in decode_panda_structre(obj=data2['gen']).iterrows():
+    gen_names = aux_get_names(pp_grid, [("gen", _gen_name)])
+    for i, row in pp_grid.gen.iterrows():
 
         bus = bus_dict[row['bus']]
-        name = "gen_{0}_{1}".format(row['bus'], i)
+        name = gen_names[i]
 
         if row['slack']:
             bus.is_slack = True
@@ -121,12 +183,13 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
                                               Qmax=Qmax, ))
             
     # lines
-    for i, row in decode_panda_structre(obj=data2['line']).iterrows():
+    line_names = aux_get_names(pp_grid, [("line", _line_name), ("trafo", _trafo_name)])
+    for i, row in pp_grid.line.iterrows():
         bus_f = bus_dict[row['from_bus']]
         bus_t = bus_dict[row['to_bus']]
 
         # name = 'CryLine {}'.format(i)
-        name = f"{row['from_bus']}_{row['to_bus']}_{i}"
+        name = line_names[i]
 
         line = dev.Line(idtag='',
                         code='',
@@ -145,12 +208,12 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         grid.add_line(line)
 
     # transformer
-    for i, row in decode_panda_structre(obj=data2['trafo']).iterrows():
+    for i, row in pp_grid.trafo.iterrows():
         bus_f = bus_dict[row['lv_bus']]
         bus_t = bus_dict[row['hv_bus']]
 
         # name = 'Line {}'.format(i)  # transformers are also calles Line apparently
-        name = f"{row['hv_bus']}_{row['lv_bus']}_{i}"
+        name = line_names[i + pp_grid.line.shape[0]]
         
         transformer = dev.Transformer2W(idtag='',
                                         code='',
