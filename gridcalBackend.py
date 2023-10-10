@@ -180,7 +180,29 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
                                               Pmax=Pmax,
                                               Qmin=Qmin,
                                               Qmax=Qmax, ))
-            
+
+    # ext_grids
+    ext_grid_names = aux_get_names(pp_grid, [("ext_grid", _gen_name)])
+    for i, row in pp_grid.ext_grid.iterrows():
+
+        bus = bus_dict_by_index[row['bus']]
+        name = ext_grid_names[i]
+        bus.is_slack = True
+        Pmin = -999999.
+        Pmax = 999999.
+        Qmin = -999999.
+        Qmax = 999999.
+        grid.add_generator(bus, dev.Generator(idtag='',
+                                              code='',
+                                              name=name,
+                                              active=bool(row['in_service']),
+                                              P=0.0,
+                                              vset=row['vm_pu'],
+                                              Pmin=Pmin,
+                                              Pmax=Pmax,
+                                              Qmin=Qmin,
+                                              Qmax=Qmax, ))
+
     # lines
     line_names = aux_get_names(pp_grid, [("line", _line_name), ("trafo", _trafo_name)])
     for i, row in pp_grid.line.iterrows():
