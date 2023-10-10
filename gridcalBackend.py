@@ -103,24 +103,24 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         pp_grid = pp.from_json(filename)
 
     # buses
-    bus_dict_by_name = dict()
     bus_dict_by_index = dict()
     sub_names = aux_get_names(pp_grid, [("bus", _sub_name)])
     for i in range(pp_grid.bus.values.shape[0]):
 
         name = sub_names[i]
+        idx = pp_grid.bus.index[i]
         vmin = pp_grid.bus.min_vm_pu[i] if 'min_vm_pu' in pp_grid.bus else 0.8 * pp_grid.bus.vn_kv[i]
         vmax = pp_grid.bus.max_vm_pu[i] if 'max_vm_pu' in pp_grid.bus else 1.2 * pp_grid.bus.vn_kv[i]
         bus = dev.Bus(idtag='',
                       code='',
-                      name='sub_{}'.format(i),
+                      name='sub_{}'.format(idx),
                       active=bool(pp_grid.bus.in_service[i]),
                       vnom=pp_grid.bus.vn_kv[i],
                       vmin=vmin,
                       vmax=vmax
                       )
-        bus_dict_by_name[name] = bus
-        bus_dict_by_index[i] = bus
+
+        bus_dict_by_index[idx] = bus
         grid.add_bus(bus)
 
     # loads
