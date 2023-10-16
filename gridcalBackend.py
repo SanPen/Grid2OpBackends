@@ -101,35 +101,33 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         warnings.filterwarnings("ignore", category=DeprecationWarning)
         warnings.filterwarnings("ignore", category=FutureWarning)
         pp_grid = pp.from_json(filename)
-        
-    # with open(filename) as f:
-    #     data = json.load(f)
-    #     data2 = data['_object']
 
     # buses
     bus_dict = dict()
     # sub_names = aux_get_names(pp_grid, [("bus", _sub_name)])
     sub_names = ["sub_{}".format(i) for i, row in pp_grid.bus.iterrows()]
-    curr_line = 0
-    for i, row in pp_grid.bus.iterrows():
-        curr_line += 1
+    bus_dict_by_index = dict()
+    for i in range(pp_grid.bus.values.shape[0]):
         name = sub_names[i]
-        vmin = row['min_vm_pu'] if 'min_vm_pu' in row else 0.8 * row['vn_kv']
-        vmax = row['max_vm_pu'] if 'max_vm_pu' in row else 1.2 * row['vn_kv']
+        idx = pp_grid.bus.index[i]
+        vmin = pp_grid.bus.min_vm_pu[i] if 'min_vm_pu' in pp_grid.bus else 0.8 * pp_grid.bus.vn_kv[i]
+        vmax = pp_grid.bus.max_vm_pu[i] if 'max_vm_pu' in pp_grid.bus else 1.2 * pp_grid.bus.vn_kv[i]
         bus = dev.Bus(idtag='',
                       code='',
-                      name=name,
-                      active=bool(row['in_service']),
-                      vnom=row['vn_kv'],
+                      name='sub_{}'.format(idx),
+                      active=bool(pp_grid.bus.in_service[i]),
+                      vnom=pp_grid.bus.vn_kv[i],
                       vmin=vmin,
-                      vmax=vmax)
-        bus_dict[i] = bus
+                      vmax=vmax
+                      )
+
+        bus_dict_by_index[idx] = bus
         grid.add_bus(bus)
 
     # loads
     load_names = aux_get_names(pp_grid, [("load", _load_name)])
     for i, row in pp_grid.load.iterrows():
-        bus = bus_dict[row['bus']]
+        bus = bus_dict_by_index[row['bus']]
 
         name = load_names[i]
 
@@ -143,7 +141,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
     # shunt
     shunt_names = aux_get_names(pp_grid, [("shunt", _shunt_name)])
     for i, row in  pp_grid.shunt.iterrows():
-        bus = bus_dict[row['bus']]
+        bus = bus_dict_by_index[row['bus']]
         grid.add_shunt(bus, dev.Shunt(idtag='',
                                       code='',
                                       name=shunt_names[i],
@@ -155,7 +153,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
     gen_names = aux_get_names(pp_grid, [("gen", _gen_name)])
     for i, row in pp_grid.gen.iterrows():
 
-        bus = bus_dict[row['bus']]
+        bus = bus_dict_by_index[row['bus']]
         name = gen_names[i]
 
         if row['slack']:
@@ -183,12 +181,34 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
                                               Pmax=Pmax,
                                               Qmin=Qmin,
                                               Qmax=Qmax, ))
-            
+
+    # ext_grids
+    ext_grid_names = aux_get_names(pp_grid, [("ext_grid", _gen_name)])
+    for i, row in pp_grid.ext_grid.iterrows():
+
+        bus = bus_dict_by_index[row['bus']]
+        name = ext_grid_names[i]
+        bus.is_slack = True
+        Pmin = -999999.
+        Pmax = 999999.
+        Qmin = -999999.
+        Qmax = 999999.
+        grid.add_generator(bus, dev.Generator(idtag='',
+                                              code='',
+                                              name=name,
+                                              active=bool(row['in_service']),
+                                              P=0.0,
+                                              vset=row['vm_pu'],
+                                              Pmin=Pmin,
+                                              Pmax=Pmax,
+                                              Qmin=Qmin,
+                                              Qmax=Qmax, ))
+
     # lines
     line_names = aux_get_names(pp_grid, [("line", _line_name), ("trafo", _trafo_name)])
     for i, row in pp_grid.line.iterrows():
-        bus_f = bus_dict[row['from_bus']]
-        bus_t = bus_dict[row['to_bus']]
+        bus_f = bus_dict_by_index[row['from_bus']]
+        bus_t = bus_dict_by_index[row['to_bus']]
 
         # name = 'CryLine {}'.format(i)
         name = line_names[i]
@@ -204,15 +224,15 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
                                     x_ohm=row['x_ohm_per_km'],
                                     c_nf=row['c_nf_per_km'],
                                     Imax=row['max_i_ka'],
-                                    freq=50,
+                                    freq=pp_grid.f_hz,
                                     length=row['length_km'],
                                     Sbase=grid.Sbase)
         grid.add_line(line)
 
     # transformer
     for i, row in pp_grid.trafo.iterrows():
-        bus_f = bus_dict[row['lv_bus']]
-        bus_t = bus_dict[row['hv_bus']]
+        bus_f = bus_dict_by_index[row['lv_bus']]
+        bus_t = bus_dict_by_index[row['hv_bus']]
 
         # name = 'Line {}'.format(i)  # transformers are also calles Line apparently
         name = line_names[i + pp_grid.line.shape[0]]
@@ -446,10 +466,20 @@ class GridCalBackend(Backend):
         # loads
         for i, (changed_p, p, changed_q, q) in enumerate(zip(load_p.changed, load_p.values,
                                                              load_q.changed, load_q.values)):
-            if changed_p:
-                self.numerical_circuit.load_data.S[i].real = p
-            if changed_q:
-                self.numerical_circuit.load_data.S[i].imag = q
+
+            if changed_p and changed_p:
+                self.numerical_circuit.load_data.S[i] = complex(p, q)
+
+            elif changed_p and not changed_q:
+                P, Q = self.numerical_circuit.load_data.S[i]
+                self.numerical_circuit.load_data.S[i] = complex(p, Q)
+
+            elif changed_q and not changed_p:
+                P, Q = self.numerical_circuit.load_data.S[i]
+                self.numerical_circuit.load_data.S[i] = complex(P, q)
+
+            else:
+                pass  # no changes
 
         # TODO: what about shunts? => Ben: you got shunt directly in shunts__
 
