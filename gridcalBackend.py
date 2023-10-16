@@ -103,10 +103,11 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         pp_grid = pp.from_json(filename)
 
     # buses
+    bus_dict = dict()
+    # sub_names = aux_get_names(pp_grid, [("bus", _sub_name)])
+    sub_names = ["sub_{}".format(i) for i, row in pp_grid.bus.iterrows()]
     bus_dict_by_index = dict()
-    sub_names = aux_get_names(pp_grid, [("bus", _sub_name)])
     for i in range(pp_grid.bus.values.shape[0]):
-
         name = sub_names[i]
         idx = pp_grid.bus.index[i]
         vmin = pp_grid.bus.min_vm_pu[i] if 'min_vm_pu' in pp_grid.bus else 0.8 * pp_grid.bus.vn_kv[i]
@@ -425,6 +426,7 @@ class GridCalBackend(Backend):
         """
 
         # TODO: sanpen: what is this?
+        # Ben: not to be implemented, it's a real internal function.
 
         pass
 
@@ -479,9 +481,11 @@ class GridCalBackend(Backend):
             else:
                 pass  # no changes
 
-        # TODO: what about shunts?
+        # TODO: what about shunts? => Ben: you got shunt directly in shunts__
 
-        # TODO: what about topology?
+        # TODO: what about topology? => Ben: topo information is given in topo__
+        # have a look at https://github.com/rte-france/Grid2Op/blob/master/examples/backend_integration/Step4_modify_line_status.py
+        # and https://github.com/rte-france/Grid2Op/blob/master/examples/backend_integration/Step5_modify_topology.py
 
     def runpf(self, is_dc=False):
         """
@@ -504,6 +508,7 @@ class GridCalBackend(Backend):
         self.results = multi_island_pf_nc(nc=self.numerical_circuit, options=pf_options)
 
         # return the status
+        # TODO Ben if the powerflow has diverged, it is expected to return an exception and not "None"
         return self.results.converged, None
 
     def assert_grid_correct(self):
@@ -658,13 +663,13 @@ class GridCalBackend(Backend):
             P = self.results.Sf.real  # MW
             Q = self.results.Sf.imag  # MVAr
             V = self.numerical_circuit.branch_data.C_branch_bus_f * Vm  # kV
-            A = self.numerical_circuit.branch_data.F
+            A = self.numerical_circuit.branch_data.F  # TODO Ben this does not appear to be the flow in Amps
 
         else:
             P = np.zeros(self.numerical_circuit.nbr)  # MW
             Q = np.zeros(self.numerical_circuit.nbr)  # MVAr
             V = self.numerical_circuit.branch_data.C_branch_bus_f * self.numerical_circuit.bus_data.Vnom  # kV
-            A = self.numerical_circuit.branch_data.F
+            A = self.numerical_circuit.branch_data.F  # TODO Ben this does not appear to be the flow in Amps
 
         return P, Q, V, A
 
@@ -674,14 +679,13 @@ class GridCalBackend(Backend):
             P = self.results.St.real  # MW
             Q = self.results.St.imag  # MVAr
             V = self.numerical_circuit.branch_data.C_branch_bus_t * Vm  # kV
-            A = self.numerical_circuit.branch_data.T
+            A = self.numerical_circuit.branch_data.T # TODO Ben this does not appear to be the flow in Amps
 
         else:
             P = np.zeros(self.numerical_circuit.nbr)  # MW
             Q = np.zeros(self.numerical_circuit.nbr)  # MVAr
             V = self.numerical_circuit.branch_data.C_branch_bus_t * self.numerical_circuit.bus_data.Vnom  # kV
-            A = self.numerical_circuit.branch_data.T
-
+            A = self.numerical_circuit.branch_data.T  # TODO Ben this does not appear to be the flow in Amps
         return P, Q, V, A
 
     def shunt_info(self):
@@ -690,13 +694,13 @@ class GridCalBackend(Backend):
             P = self.results.Sbus.real * self.numerical_circuit.shunt_data.C_bus_elm  # MW
             Q = self.results.Sbus.imag * self.numerical_circuit.shunt_data.C_bus_elm  # MVAr
             V = Vm * self.numerical_circuit.shunt_data.C_bus_elm  # kV
-            A = self.numerical_circuit.shunt_data.get_bus_indices()
+            A = self.numerical_circuit.shunt_data.get_bus_indices() # TODO Ben this does not appear to be the flow in Amps
 
         else:
             P = np.zeros(self.numerical_circuit.nshunt)  # MW
             Q = np.zeros(self.numerical_circuit.nshunt)  # MVAr
             V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.shunt_data.C_bus_elm  # kV
-            A = self.numerical_circuit.shunt_data.get_bus_indices()
+            A = self.numerical_circuit.shunt_data.get_bus_indices()  # TODO Ben this does not appear to be the flow in Amps
 
         return P, Q, V, A
 
@@ -717,4 +721,5 @@ class GridCalBackend(Backend):
         # TODO: what to do here?
         # if bus_id >= self._number_true_line:
         #     return bus_id - self._number_true_line
+        # Ben: it's an internal function to pandapower backend mainly. Nothing to do as it's not used.
         return bus_id
