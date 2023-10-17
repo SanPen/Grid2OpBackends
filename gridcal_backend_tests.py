@@ -11,6 +11,7 @@ def this_make_backend(self, detailed_infos_for_cascading_failures=False):
     return GridCalBackend(
             detailed_infos_for_cascading_failures=detailed_infos_for_cascading_failures
         )
+
 add_name_cls = "test_GridCalBackend"
 
 res = create_test_suite(make_backend_fun=this_make_backend,

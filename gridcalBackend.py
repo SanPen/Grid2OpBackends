@@ -73,8 +73,8 @@ def aux_get_names(grid, grid_attrs):
     for (attr, fun_to_name) in grid_attrs:
         df = getattr(grid, attr)
         if (
-            "name" in df.columns
-            and not df["name"].isnull().values.any()
+                "name" in df.columns
+                and not df["name"].isnull().values.any()
         ):
             res += [name for name in df["name"]]
         else:
@@ -94,7 +94,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
     :return: MultiCircuit object
     """
     grid = MultiCircuit()
-    
+
     # load the grid using pandapower (just for loading utilities, as they store things in some weird format)
     with warnings.catch_warnings():
         # remove deprecationg warnings for old version of pandapower
@@ -140,7 +140,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
 
     # shunt
     shunt_names = aux_get_names(pp_grid, [("shunt", _shunt_name)])
-    for i, row in  pp_grid.shunt.iterrows():
+    for i, row in pp_grid.shunt.iterrows():
         bus = bus_dict_by_index[row['bus']]
         grid.add_shunt(bus, dev.Shunt(idtag='',
                                       code='',
@@ -158,7 +158,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
 
         if row['slack']:
             bus.is_slack = True
-        
+
         Pmin = row['min_p_mw'] if 'min_p_mw' in row else None
         Pmax = row['max_p_mw'] if 'max_p_mw' in row else None
         Qmin = row['min_q_mvar'] if 'min_q_mvar' in row else None
@@ -185,7 +185,6 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
     # ext_grids
     ext_grid_names = aux_get_names(pp_grid, [("ext_grid", _gen_name)])
     for i, row in pp_grid.ext_grid.iterrows():
-
         bus = bus_dict_by_index[row['bus']]
         name = ext_grid_names[i]
         bus.is_slack = True
@@ -236,7 +235,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
 
         # name = 'Line {}'.format(i)  # transformers are also calles Line apparently
         name = line_names[i + pp_grid.line.shape[0]]
-        
+
         transformer = dev.Transformer2W(idtag='',
                                         code='',
                                         name=name,
@@ -265,7 +264,6 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
 
 
 class GridCalBackend(Backend):
-
     """
     Grid2Op backend using GridCalEngine
     """
@@ -302,6 +300,10 @@ class GridCalBackend(Backend):
 
         # Power flow results
         self.results: Union[sim.PowerFlowResults, None] = None
+
+        # auxiliary stuff
+        self.generator_bus_indices: np.ndarray = None
+        self.generator_bus_nominal_volatges: np.ndarray = None
 
     def get_theta(self):
         """
@@ -399,12 +401,15 @@ class GridCalBackend(Backend):
             full_path = os.path.join(path, filename)
         if not os.path.exists(full_path):
             raise RuntimeError('There is no powergrid at "{}"'.format(full_path))
-        
+
         # parse the pandapower json file
         self._grid = read_pandapower_file(filename=full_path)
 
         # compile for easy numerical access
         self.numerical_circuit = compile_numerical_circuit_at(circuit=self._grid, t_idx=None)
+
+        self.generator_bus_nominal_volatges = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.generator_data.C_bus_elm
+        self.generator_bus_indices = self.numerical_circuit.generator_data.get_bus_indices()
 
         # initilize internals
         self.initiailize_or_update_internals()
@@ -454,38 +459,70 @@ class GridCalBackend(Backend):
             self.numerical_circuit.bus_data.active[i] = bus1_status
 
         # generators
-        for i, (changed, p) in enumerate(zip(prod_p.changed, prod_p.values)):
-            if changed:
-                self.numerical_circuit.generator_data.p[i] = p
+        for i, (changed_p, p, changed_v, vset) in enumerate(zip(prod_p.changed, prod_p.values,
+                                                                prod_v.changed, prod_v.values)):
+            if changed_p:
+                self.numerical_circuit.generator_data.p[i] = p  # in MW, I hope
+
+            if changed_v:
+                # vset comes in kV, we need the p.u. set point
+                vnom = self.generator_bus_nominal_volatges[i]
+                self.numerical_circuit.generator_data.v[i] = vset / vnom
 
         # batteries
-        for i, (changed, p) in enumerate(zip(storage.changed, storage.values)):
+        batteries_bus = backendAction.get_storages_bus()
+        for i, (changed, p,
+                bus_changed, bus_value) in enumerate(zip(storage.changed, storage.values,
+                                                         batteries_bus.changed, batteries_bus.values)):
             if changed:
-                self.numerical_circuit.battery_data.p[i] = p
+                self.numerical_circuit.battery_data.p[i] = p  # in MW, I hope
+
+            if bus_changed:
+                self.numerical_circuit.battery_data.active[i] = int(bus_value != -1)
 
         # loads
-        for i, (changed_p, p, changed_q, q) in enumerate(zip(load_p.changed, load_p.values,
-                                                             load_q.changed, load_q.values)):
+        loads_bus = backendAction.get_loads_bus()
+        for i, (changed_p, p,
+                changed_q, q,
+                bus_changed, bus_value) in enumerate(zip(load_p.changed, load_p.values,
+                                                         load_q.changed, load_q.values,
+                                                         loads_bus.changed, loads_bus.values)):
 
             if changed_p and changed_p:
                 self.numerical_circuit.load_data.S[i] = complex(p, q)
 
             elif changed_p and not changed_q:
-                P, Q = self.numerical_circuit.load_data.S[i]
+                Q = self.numerical_circuit.load_data.S[i].imag
                 self.numerical_circuit.load_data.S[i] = complex(p, Q)
 
             elif changed_q and not changed_p:
-                P, Q = self.numerical_circuit.load_data.S[i]
+                P = self.numerical_circuit.load_data.S[i].real
                 self.numerical_circuit.load_data.S[i] = complex(P, q)
 
             else:
                 pass  # no changes
+
+            if bus_changed:
+                self.numerical_circuit.load_data.active[i] = int(bus_value != -1)
 
         # TODO: what about shunts? => Ben: you got shunt directly in shunts__
 
         # TODO: what about topology? => Ben: topo information is given in topo__
         # have a look at https://github.com/rte-france/Grid2Op/blob/master/examples/backend_integration/Step4_modify_line_status.py
         # and https://github.com/rte-france/Grid2Op/blob/master/examples/backend_integration/Step5_modify_topology.py
+
+        # handle the disconnection of lines
+        lines_or_bus = backendAction.get_lines_or_bus()
+        lines_ex_bus = backendAction.get_lines_ex_bus()
+        for k, (or_bus_changed, or_bus,
+                ex_bus_changed, ex_bus) in enumerate(zip(lines_or_bus.changed, lines_or_bus.values,
+                                                         lines_ex_bus.changed, lines_ex_bus.values)):
+
+            if or_bus_changed or ex_bus_changed:
+                if or_bus == -1 or ex_bus == -1:
+                    self.numerical_circuit.branch_data.active[k] = 0
+                else:
+                    self.numerical_circuit.branch_data.active[k] = 1
 
     def runpf(self, is_dc=False):
         """
@@ -508,8 +545,10 @@ class GridCalBackend(Backend):
         self.results = multi_island_pf_nc(nc=self.numerical_circuit, options=pf_options)
 
         # return the status
-        # TODO Ben if the powerflow has diverged, it is expected to return an exception and not "None"
-        return self.results.converged, None
+        if self.results.converged:
+            return True, None
+        else:
+            return False, Exception("Did not converge, error ".format(self.results.error))
 
     def assert_grid_correct(self):
         """
@@ -641,7 +680,7 @@ class GridCalBackend(Backend):
             Q = np.zeros(self.numerical_circuit.ngen)
             V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.generator_data.C_bus_elm
 
-        return P, Q, V
+        return P.copy(), Q.copy(), V.copy()
 
     def loads_info(self):
         if self.results:
@@ -655,7 +694,7 @@ class GridCalBackend(Backend):
             Q = np.zeros(self.numerical_circuit.nload)
             V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.load_data.C_bus_elm
 
-        return P, Q, V
+        return P.copy(), Q.copy(), V.copy()
 
     def lines_or_info(self):
         if self.results:
@@ -663,15 +702,17 @@ class GridCalBackend(Backend):
             P = self.results.Sf.real  # MW
             Q = self.results.Sf.imag  # MVAr
             V = self.numerical_circuit.branch_data.C_branch_bus_f * Vm  # kV
-            A = self.numerical_circuit.branch_data.F  # TODO Ben this does not appear to be the flow in Amps
+            A = (self.results.Sf / (V * 1.732050808) * 1000.0).real  # flow in Amperes
 
         else:
             P = np.zeros(self.numerical_circuit.nbr)  # MW
             Q = np.zeros(self.numerical_circuit.nbr)  # MVAr
             V = self.numerical_circuit.branch_data.C_branch_bus_f * self.numerical_circuit.bus_data.Vnom  # kV
-            A = self.numerical_circuit.branch_data.F  # TODO Ben this does not appear to be the flow in Amps
+            A = np.zeros(self.numerical_circuit.nbr)
 
-        return P, Q, V, A
+        V *= self.numerical_circuit.branch_data.active
+
+        return P.copy(), Q.copy(), V.copy(), A.copy()
 
     def lines_ex_info(self):
         if self.results:
@@ -679,30 +720,34 @@ class GridCalBackend(Backend):
             P = self.results.St.real  # MW
             Q = self.results.St.imag  # MVAr
             V = self.numerical_circuit.branch_data.C_branch_bus_t * Vm  # kV
-            A = self.numerical_circuit.branch_data.T # TODO Ben this does not appear to be the flow in Amps
+            A = (self.results.St / (V * 1.732050808) * 1000.0).real  # flow in Amperes
 
         else:
             P = np.zeros(self.numerical_circuit.nbr)  # MW
             Q = np.zeros(self.numerical_circuit.nbr)  # MVAr
             V = self.numerical_circuit.branch_data.C_branch_bus_t * self.numerical_circuit.bus_data.Vnom  # kV
-            A = self.numerical_circuit.branch_data.T  # TODO Ben this does not appear to be the flow in Amps
-        return P, Q, V, A
+            A = np.zeros(self.numerical_circuit.nbr)
+
+        V *= self.numerical_circuit.branch_data.active
+
+        return P.copy(), Q.copy(), V.copy(), A.copy()
 
     def shunt_info(self):
         if self.results:
             Vm = np.abs(self.results.voltage * self.numerical_circuit.bus_data.Vnom)
-            P = self.results.Sbus.real * self.numerical_circuit.shunt_data.C_bus_elm  # MW
-            Q = self.results.Sbus.imag * self.numerical_circuit.shunt_data.C_bus_elm  # MVAr
+            S_shunt = self.results.Sbus.real * self.numerical_circuit.shunt_data.C_bus_elm
+            P = S_shunt.real  # MW
+            Q = S_shunt.imag  # MVAr
             V = Vm * self.numerical_circuit.shunt_data.C_bus_elm  # kV
-            A = self.numerical_circuit.shunt_data.get_bus_indices() # TODO Ben this does not appear to be the flow in Amps
+            A = (S_shunt / (V * 1.732050808) * 1000.0).real  # flow in Amperes
 
         else:
             P = np.zeros(self.numerical_circuit.nshunt)  # MW
             Q = np.zeros(self.numerical_circuit.nshunt)  # MVAr
             V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.shunt_data.C_bus_elm  # kV
-            A = self.numerical_circuit.shunt_data.get_bus_indices()  # TODO Ben this does not appear to be the flow in Amps
+            A = np.zeros(self.numerical_circuit.nshunt)
 
-        return P, Q, V, A
+        return P.copy(), Q.copy(), V.copy(), A.copy()
 
     def storages_info(self):
         if self.results:
@@ -715,7 +760,7 @@ class GridCalBackend(Backend):
             Q = np.zeros(self.numerical_circuit.nbatt)
             V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.battery_data.C_bus_elm
 
-        return P, Q, V
+        return P.copy(), Q.copy(), V.copy()
 
     def sub_from_bus_id(self, bus_id):
         # TODO: what to do here?

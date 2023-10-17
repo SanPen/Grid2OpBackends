@@ -2,4 +2,4 @@
 numpy
 numba
 grid2op
-GridCalEngine >= 5.0.0a20
+GridCalEngine >= 5.0.0a22
