@@ -450,7 +450,7 @@ class GridCalBackend(Backend):
             active_bus,
             (prod_p, prod_v, load_p, load_q, storage),
             topo__,
-            shunts__,
+            (shunt_p, shunt_q, shunt_bus),
         ) = backendAction()
 
         # buses
@@ -459,8 +459,12 @@ class GridCalBackend(Backend):
             self.numerical_circuit.bus_data.active[i] = bus1_status
 
         # generators
-        for i, (changed_p, p, changed_v, vset) in enumerate(zip(prod_p.changed, prod_p.values,
-                                                                prod_v.changed, prod_v.values)):
+        gen_bus = backendAction.get_gens_bus()
+        for i, (changed_p, p,
+                changed_v, vset,
+                bus_changed, bus_value) in enumerate(zip(prod_p.changed, prod_p.values,
+                                                         prod_v.changed, prod_v.values,
+                                                         gen_bus.changed, gen_bus.values)):
             if changed_p:
                 self.numerical_circuit.generator_data.p[i] = p  # in MW, I hope
 
@@ -468,6 +472,20 @@ class GridCalBackend(Backend):
                 # vset comes in kV, we need the p.u. set point
                 vnom = self.generator_bus_nominal_volatges[i]
                 self.numerical_circuit.generator_data.v[i] = vset / vnom
+
+            if bus_changed:
+                self.numerical_circuit.generator_data.active[i] = int(bus_value != -1)
+
+        # Alternative:
+        # generators' power
+        # for gen_id, new_p in prod_p:
+        #     self.numerical_circuit.generator_data.p[gen_id] = new_p  # in MW, I hope
+        #
+        # # generators' voltage
+        # for gen_id, new_v in prod_v:
+        #     # vset comes in kV, we need the p.u. set point
+        #     vnom = self.generator_bus_nominal_volatges[gen_id]
+        #     self.numerical_circuit.generator_data.v[gen_id] = new_v / vnom
 
         # batteries
         batteries_bus = backendAction.get_storages_bus()
@@ -505,7 +523,28 @@ class GridCalBackend(Backend):
             if bus_changed:
                 self.numerical_circuit.load_data.active[i] = int(bus_value != -1)
 
-        # TODO: what about shunts? => Ben: you got shunt directly in shunts__
+        # shunts
+        for i, (changed_p, p,
+                changed_q, q,
+                bus_changed, bus_value) in enumerate(zip(shunt_p.changed, shunt_p.values,
+                                                         shunt_q.changed, shunt_q.values,
+                                                         shunt_bus.changed, shunt_bus.values)):
+            if changed_p and changed_p:
+                self.numerical_circuit.shunt_data.admittance[i] = complex(p, q)
+
+            elif changed_p and not changed_q:
+                Q = self.numerical_circuit.shunt_data.admittance[i].imag
+                self.numerical_circuit.shunt_data.admittance[i] = complex(p, Q)
+
+            elif changed_q and not changed_p:
+                P = self.numerical_circuit.shunt_data.admittance[i].real
+                self.numerical_circuit.shunt_data.admittance[i] = complex(P, q)
+
+            else:
+                pass  # no changes
+
+            if bus_changed:
+                self.numerical_circuit.shunt_data.active[i] = int(bus_value != -1)
 
         # TODO: what about topology? => Ben: topo information is given in topo__
         # have a look at https://github.com/rte-france/Grid2Op/blob/master/examples/backend_integration/Step4_modify_line_status.py
