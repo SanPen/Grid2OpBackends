@@ -303,7 +303,7 @@ class GridCalBackend(Backend):
 
         # auxiliary stuff
         self.generator_bus_indices: np.ndarray = None
-        self.generator_bus_nominal_volatges: np.ndarray = None
+        self.generator_bus_nominal_voltages: np.ndarray = None
 
     def get_theta(self):
         """
@@ -408,32 +408,11 @@ class GridCalBackend(Backend):
         # compile for easy numerical access
         self.numerical_circuit = compile_numerical_circuit_at(circuit=self._grid, t_idx=None)
 
-        self.generator_bus_nominal_volatges = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.generator_data.C_bus_elm
+        self.generator_bus_nominal_voltages = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.generator_data.C_bus_elm
         self.generator_bus_indices = self.numerical_circuit.generator_data.get_bus_indices()
 
         # initilize internals
         self.initiailize_or_update_internals()
-
-    def storage_deact_for_backward_comaptibility(self):
-        """
-        INTERNAL
-
-        .. warning:: /!\\\\ Internal, do not use unless you know what you are doing /!\\\\
-
-        This function is called under a very specific condition: an old environment has been loaded that
-        do not take into account the storage units, even though they were possibly some modeled by the backend.
-
-        This function is supposed to "remove" from the backend any reference to the storage units.
-
-        Overloading this function is not necessary (when developing a new backend). If it is not overloaded however,
-        some "backward compatibility" (for grid2op <= 1.4.0) might not be working properly depending on
-        your backend.
-        """
-
-        # TODO: sanpen: what is this?
-        # Ben: not to be implemented, it's a real internal function.
-
-        pass
 
     def apply_action(self, backendAction=None):
         """
@@ -470,7 +449,7 @@ class GridCalBackend(Backend):
 
             if changed_v:
                 # vset comes in kV, we need the p.u. set point
-                vnom = self.generator_bus_nominal_volatges[i]
+                vnom = self.generator_bus_nominal_voltages[i]
                 self.numerical_circuit.generator_data.v[i] = vset / vnom
 
             if bus_changed:
@@ -484,7 +463,7 @@ class GridCalBackend(Backend):
         # # generators' voltage
         # for gen_id, new_v in prod_v:
         #     # vset comes in kV, we need the p.u. set point
-        #     vnom = self.generator_bus_nominal_volatges[gen_id]
+        #     vnom = self.generator_bus_nominal_voltages[gen_id]
         #     self.numerical_circuit.generator_data.v[gen_id] = new_v / vnom
 
         # batteries

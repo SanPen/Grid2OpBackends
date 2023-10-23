@@ -22,4 +22,4 @@ res = create_test_suite(make_backend_fun=this_make_backend,
 
 # and run it with `python -m unittest gridcal_backend_tests.py`
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(failfast=True) # Eloy: this can help debugging
