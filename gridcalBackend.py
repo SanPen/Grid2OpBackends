@@ -269,7 +269,7 @@ class GridCalBackend(Backend):
     """
 
     # required to be defined
-    shunts_data_available = False
+    shunts_data_available = True
 
     def __init__(self,
                  detailed_infos_for_cascading_failures=False,
@@ -360,19 +360,22 @@ class GridCalBackend(Backend):
         self.n_line = self.numerical_circuit.nbr  # number of lines in the grid should be read from self._grid
         self.n_gen = self.numerical_circuit.ngen  # number of generators in the grid should be read from self._grid
         self.n_load = self.numerical_circuit.nload  # number of generators in the grid should be read from self._grid
-        self.n_sub = self.numerical_circuit.nbus  # number of generators in the grid should be read from self._grid
+        self.n_sub = self.numerical_circuit.nbus  # number of substations in the grid should be read from self._grid
+        self.n_shunt = self.numerical_circuit.nshunt  # number of shunts in the grid 
 
         # other attributes should be read from self._grid (see table below for a full list of the attributes)
         self.load_to_subid = self.numerical_circuit.load_data.get_bus_indices()
         self.gen_to_subid = self.numerical_circuit.generator_data.get_bus_indices()
         self.line_or_to_subid = self.numerical_circuit.branch_data.F
         self.line_ex_to_subid = self.numerical_circuit.branch_data.T
+        self.shunt_to_subid = self.numerical_circuit.shunt_data.get_bus_indices()
 
         # naming
         self.name_load = self.numerical_circuit.load_data.names
         self.name_gen = self.numerical_circuit.generator_data.names
         self.name_line = self.numerical_circuit.branch_data.names
         self.name_sub = self.numerical_circuit.bus_data.names
+        self.name_shunt = self.numerical_circuit.shunt_data.names
 
         # and finish the initialization with a call to this function
         self._compute_pos_big_topo()
