@@ -268,6 +268,9 @@ class GridCalBackend(Backend):
     Grid2Op backend using GridCalEngine
     """
 
+    # required to be defined
+    shunts_data_available = False
+
     def __init__(self,
                  detailed_infos_for_cascading_failures=False,
                  dist_slack=False,
@@ -302,8 +305,8 @@ class GridCalBackend(Backend):
         self.results: Union[sim.PowerFlowResults, None] = None
 
         # auxiliary stuff
-        self.generator_bus_indices: np.ndarray = None
-        self.generator_bus_nominal_volatges: np.ndarray = None
+        self.generator_bus_indices: Union[np.ndarray, None] = None
+        self.generator_bus_nominal_volatges: Union[np.ndarray, None] = None
 
     def get_theta(self):
         """
@@ -450,7 +453,7 @@ class GridCalBackend(Backend):
             active_bus,
             (prod_p, prod_v, load_p, load_q, storage),
             topo__,
-            (shunt_p, shunt_q, shunt_bus),
+            shunts__,
         ) = backendAction()
 
         # buses
@@ -524,27 +527,29 @@ class GridCalBackend(Backend):
                 self.numerical_circuit.load_data.active[i] = int(bus_value != -1)
 
         # shunts
-        for i, (changed_p, p,
-                changed_q, q,
-                bus_changed, bus_value) in enumerate(zip(shunt_p.changed, shunt_p.values,
-                                                         shunt_q.changed, shunt_q.values,
-                                                         shunt_bus.changed, shunt_bus.values)):
-            if changed_p and changed_p:
-                self.numerical_circuit.shunt_data.admittance[i] = complex(p, q)
+        if shunts__ is not None:
+            (shunt_p, shunt_q, shunt_bus) = shunts__
+            for i, (changed_p, p,
+                    changed_q, q,
+                    bus_changed, bus_value) in enumerate(zip(shunt_p.changed, shunt_p.values,
+                                                             shunt_q.changed, shunt_q.values,
+                                                             shunt_bus.changed, shunt_bus.values)):
+                if changed_p and changed_p:
+                    self.numerical_circuit.shunt_data.admittance[i] = complex(p, q)
 
-            elif changed_p and not changed_q:
-                Q = self.numerical_circuit.shunt_data.admittance[i].imag
-                self.numerical_circuit.shunt_data.admittance[i] = complex(p, Q)
+                elif changed_p and not changed_q:
+                    Q = self.numerical_circuit.shunt_data.admittance[i].imag
+                    self.numerical_circuit.shunt_data.admittance[i] = complex(p, Q)
 
-            elif changed_q and not changed_p:
-                P = self.numerical_circuit.shunt_data.admittance[i].real
-                self.numerical_circuit.shunt_data.admittance[i] = complex(P, q)
+                elif changed_q and not changed_p:
+                    P = self.numerical_circuit.shunt_data.admittance[i].real
+                    self.numerical_circuit.shunt_data.admittance[i] = complex(P, q)
 
-            else:
-                pass  # no changes
+                else:
+                    pass  # no changes
 
-            if bus_changed:
-                self.numerical_circuit.shunt_data.active[i] = int(bus_value != -1)
+                if bus_changed:
+                    self.numerical_circuit.shunt_data.active[i] = int(bus_value != -1)
 
         # TODO: what about topology? => Ben: topo information is given in topo__
         # have a look at https://github.com/rte-france/Grid2Op/blob/master/examples/backend_integration/Step4_modify_line_status.py
@@ -710,14 +715,16 @@ class GridCalBackend(Backend):
 
     def generators_info(self):
         if self.results:
-            Vm = np.abs(self.results.voltage * self.numerical_circuit.bus_data.Vnom)
             P = self.numerical_circuit.generator_data.p
             Q = np.abs(self.results.Sbus.imag) * self.numerical_circuit.generator_data.C_bus_elm
-            V = Vm * self.numerical_circuit.generator_data.C_bus_elm
+            # Vm = np.abs(self.results.voltage * self.numerical_circuit.bus_data.Vnom)
+            # V = Vm * self.numerical_circuit.generator_data.C_bus_elm
+            V = self.generator_bus_nominal_volatges * self.numerical_circuit.generator_data.v
         else:
             P = np.zeros(self.numerical_circuit.ngen)
             Q = np.zeros(self.numerical_circuit.ngen)
-            V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.generator_data.C_bus_elm
+            # V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.generator_data.C_bus_elm
+            V = self.generator_bus_nominal_volatges * self.numerical_circuit.generator_data.v
 
         return P.copy(), Q.copy(), V.copy()
 
