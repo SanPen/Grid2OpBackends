@@ -306,7 +306,7 @@ class GridCalBackend(Backend):
 
         # auxiliary stuff
         self.generator_bus_indices: Union[np.ndarray, None] = None
-        self.generator_bus_nominal_volatges: Union[np.ndarray, None] = None
+        self.generator_bus_nominal_voltages: Union[np.ndarray, None] = None
 
     def get_theta(self):
         """
@@ -411,7 +411,7 @@ class GridCalBackend(Backend):
         # compile for easy numerical access
         self.numerical_circuit = compile_numerical_circuit_at(circuit=self._grid, t_idx=None)
 
-        self.generator_bus_nominal_volatges = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.generator_data.C_bus_elm
+        self.generator_bus_nominal_voltages = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.generator_data.C_bus_elm
         self.generator_bus_indices = self.numerical_circuit.generator_data.get_bus_indices()
 
         # initilize internals
@@ -473,7 +473,7 @@ class GridCalBackend(Backend):
 
             if changed_v:
                 # vset comes in kV, we need the p.u. set point
-                vnom = self.generator_bus_nominal_volatges[i]
+                vnom = self.generator_bus_nominal_voltages[i]
                 self.numerical_circuit.generator_data.v[i] = vset / vnom
 
             if bus_changed:
@@ -719,12 +719,12 @@ class GridCalBackend(Backend):
             Q = np.abs(self.results.Sbus.imag) * self.numerical_circuit.generator_data.C_bus_elm
             # Vm = np.abs(self.results.voltage * self.numerical_circuit.bus_data.Vnom)
             # V = Vm * self.numerical_circuit.generator_data.C_bus_elm
-            V = self.generator_bus_nominal_volatges * self.numerical_circuit.generator_data.v
+            V = self.generator_bus_nominal_voltages * self.numerical_circuit.generator_data.v
         else:
             P = np.zeros(self.numerical_circuit.ngen)
             Q = np.zeros(self.numerical_circuit.ngen)
             # V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.generator_data.C_bus_elm
-            V = self.generator_bus_nominal_volatges * self.numerical_circuit.generator_data.v
+            V = self.generator_bus_nominal_voltages * self.numerical_circuit.generator_data.v
 
         return P.copy(), Q.copy(), V.copy()
 
