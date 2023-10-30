@@ -27,6 +27,8 @@ from GridCalEngine.Simulations.PowerFlow.power_flow_worker import multi_island_p
 from GridCalEngine.basic_structures import SolverType
 from GridCalEngine.IO.file_handler import FileSave
 
+class BusActivationException(Exception):
+    pass
 
 def decode_panda_structre(obj: Dict[str, str]) -> pd.DataFrame:
     """
@@ -106,6 +108,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
     # sub_names = aux_get_names(pp_grid, [("bus", _sub_name)])
     sub_names = ["sub_{}".format(i) for i, row in pp_grid.bus.iterrows()]
     bus_dict_by_index = dict()
+    grid.substations = []
     for i in range(pp_grid.bus.values.shape[0]):
 
         name = sub_names[i]
@@ -118,7 +121,7 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
 
         # create the bus
         bus = dev.Bus(idtag='',
-                      code='',
+                      code='1',
                       name='sub_{}'.format(idx),
                       active=bool(pp_grid.bus.in_service[i]),
                       vnom=pp_grid.bus.vn_kv[i],
@@ -315,8 +318,8 @@ class GridCalBackend(Backend):
         self.generator_bus_indices: Union[np.ndarray, None] = None
         self.generator_bus_nominal_voltages: Union[np.ndarray, None] = None
 
-        self.shunts_data_available = True
-
+        self.bus_idx_in_sub = dict()
+        
     def get_theta(self):
         """
         Returns the voltage angle in degrees from several devices
@@ -389,6 +392,9 @@ class GridCalBackend(Backend):
         # and finish the initialization with a call to this function
         self._compute_pos_big_topo()
 
+        # Trick for accessing object method when the class attribute is not available
+        self.shunts_data_available = True
+
         # the initial thermal limit
         self.thermal_limit_a = self.numerical_circuit.branch_data.rates
 
@@ -429,6 +435,11 @@ class GridCalBackend(Backend):
         # initilize internals
         self.initiailize_or_update_internals()
 
+        # Map buses to code
+        self.bus_idx_in_sub = dict()
+        for i, bus in enumerate(self._grid.buses):
+            self.bus_idx_in_sub[i] = 1 if bus.code == "1" else 2
+
     def storage_deact_for_backward_comaptibility(self):
         """
         INTERNAL
@@ -467,11 +478,21 @@ class GridCalBackend(Backend):
             topo__,
             shunts__,
         ) = backendAction()
-
+        
         # buses
+        subs_vect = self.numerical_circuit.bus_data.substations
         for i, (bus1_status, bus2_status) in enumerate(active_bus):
-            # TODO: what is this? why are there 2 buses?
-            self.numerical_circuit.bus_data.active[i] = bus1_status
+            # TODO: what is this? why are there 2 buses? Maybe the iteration is over substations
+            sub_vect= np.where(subs_vect == i)[0]
+            if len(sub_vect) == 1:
+                bus1_id = sub_vect[0]
+                self.numerical_circuit.bus_data.active[bus1_id] = int(bus1_status)
+            elif len(sub_vect) == 2:
+                bus1_id, bus2_id = sub_vect
+                self.numerical_circuit.bus_data.active[bus1_id] = int(bus1_status)
+                self.numerical_circuit.bus_data.active[bus2_id] = int(bus2_status)
+            else:
+                raise BusActivationException("There was a problem")
 
         # generators
         gen_bus = backendAction.get_gens_bus()
@@ -684,7 +705,7 @@ class GridCalBackend(Backend):
     def _reconnect_line(self, id_):
         self.numerical_circuit.branch_data.active[id_] = 1
 
-    def get_topo_vect(self):
+    def get_topo_vect_old(self):
         """
         Compose or get topo_vect
         the size should agree with the rows of type(self).grid_objects_types
@@ -692,11 +713,9 @@ class GridCalBackend(Backend):
         """
         # n = self.numerical_circuit.generator_data.nelm
         # n += self.numerical_circuit.load_data.nelm
-        # n += self.numerical_circuit.shunt_data.nelm
         # n += self.numerical_circuit.branch_data.nelm * 2
         # n += self.numerical_circuit.battery_data.nelm
         # bus_idx, gen_idx, load_idx, shunt_idx, line_idx, storage_idx
-
         # declare a list for each bus
         data = {i: list() for i in range(self.numerical_circuit.nbus)}
 
@@ -723,7 +742,60 @@ class GridCalBackend(Backend):
         for bus_idx in range(self.numerical_circuit.nbus):
             lst2 += data[bus_idx]
 
+        # gen_buses = self.numerical_circuit.generator_data.C_bus_elm.sum(axis = 1).A1
+        # for i, num in enumerate(gen_buses):
+        #     if num == 0:
+        #         continue
+
         return np.array(lst2)
+    
+    def get_topo_vect(self):
+        """
+        Compose or get topo_vect
+        the size should agree with the rows of type(self).grid_objects_types
+        :return:
+        """
+        topo_list = []
+        # n = self.numerical_circuit.generator_data.nelm
+        # n += self.numerical_circuit.load_data.nelm
+        # n += self.numerical_circuit.branch_data.nelm * 2
+        # n += self.numerical_circuit.battery_data.nelm
+        # bus_idx, gen_idx, load_idx, shunt_idx, line_idx, storage_idx
+        # declare a list for each bus
+        data = {i: list() for i in range(self.numerical_circuit.nbus)}
+
+        # for each monopole structure ...
+        for struct in [self.numerical_circuit.generator_data,
+                       self.numerical_circuit.load_data,
+                       # self.numerical_circuit.shunt_data  # shunts don't count
+                       ]:
+            for i, bus_idx in enumerate(struct.get_bus_indices()):
+                if self.numerical_circuit.bus_data.active[bus_idx]:
+                    topo_list.append(self.bus_idx_in_sub[bus_idx])
+                else:
+                    topo_list.append(-1)
+
+        # for each dipole structure ...
+        for i, (f, t) in enumerate(zip(self.numerical_circuit.branch_data.F, self.numerical_circuit.branch_data.T)):
+            if self.numerical_circuit.bus_data.active[f]:
+                topo_list.append(self.bus_idx_in_sub[f])
+            else:
+                topo_list.append(-1)
+            if self.numerical_circuit.bus_data.active[t]:
+                topo_list.append(self.bus_idx_in_sub[t])
+            else:
+                topo_list.append(-1)
+            
+        # repeat for the battery data to have the same indexing ...
+        for struct in [self.numerical_circuit.battery_data]:
+            for i, bus_idx in enumerate(struct.get_bus_indices()):
+                if self.numerical_circuit.bus_data.active[bus_idx]:
+                    topo_list.append(self.bus_idx_in_sub[bus_idx])
+                else:
+                    topo_list.append(-1)
+                
+
+        return np.array(topo_list)
 
     def generators_info(self):
         if self.results:
@@ -792,21 +864,24 @@ class GridCalBackend(Backend):
         return P.copy(), Q.copy(), V.copy(), A.copy()
 
     def shunt_info(self):
+        shunts_subid = self.numerical_circuit.shunt_data.get_bus_indices()
+        shunts_subid = np.array([self.bus_idx_in_sub[i] for i in shunts_subid])
+
         if self.results:
             Vm = np.abs(self.results.voltage * self.numerical_circuit.bus_data.Vnom)
             S_shunt = self.results.Sbus.real * self.numerical_circuit.shunt_data.C_bus_elm
             P = S_shunt.real  # MW
             Q = S_shunt.imag  # MVAr
             V = Vm * self.numerical_circuit.shunt_data.C_bus_elm  # kV
-            A = (S_shunt / (V * 1.732050808) * 1000.0).real  # flow in Amperes
+            # A = (S_shunt / (V * 1.732050808) * 1000.0).real  # flow in Amperes
 
         else:
             P = np.zeros(self.numerical_circuit.nshunt)  # MW
             Q = np.zeros(self.numerical_circuit.nshunt)  # MVAr
             V = self.numerical_circuit.bus_data.Vnom * self.numerical_circuit.shunt_data.C_bus_elm  # kV
-            A = np.zeros(self.numerical_circuit.nshunt)
+            # A = np.zeros(self.numerical_circuit.nshunt)
 
-        return P.copy(), Q.copy(), V.copy(), A.copy()
+        return P.copy(), Q.copy(), V.copy(), shunts_subid
 
     def storages_info(self):
         if self.results:
