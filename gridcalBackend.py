@@ -103,26 +103,33 @@ def read_pandapower_file(filename: str) -> MultiCircuit:
         pp_grid = pp.from_json(filename)
 
     # buses
-    bus_dict = dict()
     # sub_names = aux_get_names(pp_grid, [("bus", _sub_name)])
     sub_names = ["sub_{}".format(i) for i, row in pp_grid.bus.iterrows()]
     bus_dict_by_index = dict()
     for i in range(pp_grid.bus.values.shape[0]):
+
         name = sub_names[i]
         idx = pp_grid.bus.index[i]
         vmin = pp_grid.bus.min_vm_pu[i] if 'min_vm_pu' in pp_grid.bus else 0.8 * pp_grid.bus.vn_kv[i]
         vmax = pp_grid.bus.max_vm_pu[i] if 'max_vm_pu' in pp_grid.bus else 1.2 * pp_grid.bus.vn_kv[i]
+
+        # create a new substation
+        sub = dev.Substation(name='sub_{}'.format(idx))
+
+        # create the bus
         bus = dev.Bus(idtag='',
                       code='',
                       name='sub_{}'.format(idx),
                       active=bool(pp_grid.bus.in_service[i]),
                       vnom=pp_grid.bus.vn_kv[i],
                       vmin=vmin,
-                      vmax=vmax
+                      vmax=vmax,
+                      substation=sub
                       )
 
         bus_dict_by_index[idx] = bus
         grid.add_bus(bus)
+        grid.add_substation(sub)
 
     # loads
     load_names = aux_get_names(pp_grid, [("load", _load_name)])
@@ -754,6 +761,7 @@ class GridCalBackend(Backend):
             Q = self.results.Sf.imag  # MVAr
             V = self.numerical_circuit.branch_data.C_branch_bus_f * Vm  # kV
             A = (self.results.Sf / (V * 1.732050808) * 1000.0).real  # flow in Amperes
+            np.nan_to_num(A, copy=False)  # replace nan by 0 in-place
 
         else:
             P = np.zeros(self.numerical_circuit.nbr)  # MW
