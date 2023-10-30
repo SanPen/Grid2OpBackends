@@ -308,6 +308,8 @@ class GridCalBackend(Backend):
         self.generator_bus_indices: Union[np.ndarray, None] = None
         self.generator_bus_nominal_voltages: Union[np.ndarray, None] = None
 
+        self.shunts_data_available = True
+
     def get_theta(self):
         """
         Returns the voltage angle in degrees from several devices
