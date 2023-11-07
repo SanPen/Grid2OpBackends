@@ -13,8 +13,7 @@ import warnings
 
 import numpy as np
 import pandas as pd
-from typing import Dict
-from typing import Union
+from typing import Dict, Tuple, Union
 
 from grid2op.Backend.backend import Backend
 import pandapower as pp
@@ -26,6 +25,7 @@ from GridCalEngine.Core.DataStructures.numerical_circuit import NumericalCircuit
 from GridCalEngine.Simulations.PowerFlow.power_flow_worker import multi_island_pf_nc
 from GridCalEngine.basic_structures import SolverType
 from GridCalEngine.IO.file_handler import FileSave
+
 
 class BusActivationException(Exception):
     pass
@@ -905,3 +905,217 @@ class GridCalBackend(Backend):
         #     return bus_id - self._number_true_line
         # Ben: it's an internal function to pandapower backend mainly. Nothing to do as it's not used.
         return bus_id
+
+    def check_kirchoff(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        INTERNAL
+
+        .. warning:: /!\\\\ Internal, do not use unless you know what you are doing /!\\\\
+
+        Check that the powergrid respects kirchhoff's law.
+        This function can be called at any moment (after a powerflow has been run)
+        to make sure a powergrid is in a consistent state, or to perform
+        some tests for example.
+
+        In order to function properly, this method requires that :func:`Backend.shunt_info` and
+        :func:`Backend.sub_from_bus_id` are properly defined. Otherwise the results might be wrong, especially
+        for reactive values (q_subs and q_bus bellow)
+
+        Returns
+        -------
+        p_subs ``numpy.ndarray``
+            sum of injected active power at each substations (MW)
+        q_subs ``numpy.ndarray``
+            sum of injected reactive power at each substations (MVAr)
+        p_bus ``numpy.ndarray``
+            sum of injected active power at each buses. It is given in form of a matrix, with number of substations as
+            row, and number of columns equal to the maximum number of buses for a substation (MW)
+        q_bus ``numpy.ndarray``
+            sum of injected reactive power at each buses. It is given in form of a matrix, with number of substations as
+            row, and number of columns equal to the maximum number of buses for a substation (MVAr)
+        diff_v_bus: ``numpy.ndarray`` (2d array)
+            difference between maximum voltage and minimum voltage (computed for each elements)
+            at each bus. It is an array of two dimension:
+
+            - first dimension represents the the substation (between 1 and self.n_sub)
+            - second element represents the busbar in the substation (0 or 1 usually)
+
+        """
+
+        p_or, q_or, v_or, *_ = self.lines_or_info()
+        p_ex, q_ex, v_ex, *_ = self.lines_ex_info()
+        p_gen, q_gen, v_gen = self.generators_info()
+        p_load, q_load, v_load = self.loads_info()
+        if self.n_storage > 0:
+            p_storage, q_storage, v_storage = self.storages_info()
+
+        # fist check the "substation law" : nothing is created at any substation
+        p_subs = np.zeros(self.n_sub, dtype=float)
+        q_subs = np.zeros(self.n_sub, dtype=float)
+
+        # check for each bus
+        p_bus = np.zeros((self.n_sub, 2), dtype=float)
+        q_bus = np.zeros((self.n_sub, 2), dtype=float)
+        v_bus = (
+                np.zeros((self.n_sub, 2, 2), dtype=float) - 1.0
+        )  # sub, busbar, [min,max]
+        topo_vect = self.get_topo_vect()
+
+        # bellow i'm "forced" to do a loop otherwise, numpy do not compute the "+=" the way I want it to.
+        # for example, if two powerlines are such that line_or_to_subid is equal (eg both connected to substation 0)
+        # then numpy do not guarantee that `p_subs[self.line_or_to_subid] += p_or` will add the two "corresponding p_or"
+        # TODO this can be vectorized with matrix product, see example in obs.flow_bus_matrix (BaseObervation.py)
+        for i in range(self.n_line):
+            sub_or_id = self.line_or_to_subid[i]
+            sub_ex_id = self.line_ex_to_subid[i]
+            loc_bus_or = topo_vect[self.line_or_pos_topo_vect[i]] - 1
+            loc_bus_ex = topo_vect[self.line_ex_pos_topo_vect[i]] - 1
+
+            # for substations
+            p_subs[sub_or_id] += p_or[i]
+            p_subs[sub_ex_id] += p_ex[i]
+
+            q_subs[sub_or_id] += q_or[i]
+            q_subs[sub_ex_id] += q_ex[i]
+
+            # for bus
+            p_bus[sub_or_id, loc_bus_or] += p_or[i]
+            q_bus[sub_or_id, loc_bus_or] += q_or[i]
+
+            p_bus[sub_ex_id, loc_bus_ex] += p_ex[i]
+            q_bus[sub_ex_id, loc_bus_ex] += q_ex[i]
+
+            # fill the min / max voltage per bus (initialization)
+            if (v_bus[sub_or_id, loc_bus_or,][0] == -1):
+                v_bus[sub_or_id, loc_bus_or,][0] = v_or[i]
+            if (v_bus[sub_ex_id, loc_bus_ex,][0] == -1):
+                v_bus[sub_ex_id, loc_bus_ex,][0] = v_ex[i]
+            if (v_bus[sub_or_id, loc_bus_or,][1] == -1):
+                v_bus[sub_or_id, loc_bus_or,][1] = v_or[i]
+            if (v_bus[sub_ex_id, loc_bus_ex,][1] == -1):
+                v_bus[sub_ex_id, loc_bus_ex,][1] = v_ex[i]
+
+            # now compute the correct stuff
+            if v_or[i] > 0.0:
+                # line is connected
+                v_bus[sub_or_id, loc_bus_or,][0] = min(v_bus[sub_or_id, loc_bus_or,][0], v_or[i], )
+                v_bus[sub_or_id, loc_bus_or,][1] = max(v_bus[sub_or_id, loc_bus_or,][1], v_or[i], )
+
+            if v_ex[i] > 0:
+                # line is connected
+                v_bus[sub_ex_id, loc_bus_ex,][0] = min(v_bus[sub_ex_id, loc_bus_ex,][0], v_ex[i], )
+                v_bus[sub_ex_id, loc_bus_ex,][1] = max(v_bus[sub_ex_id, loc_bus_ex,][1], v_ex[i], )
+
+        for i in range(self.n_gen):
+            # for substations
+            p_subs[self.gen_to_subid[i]] -= p_gen[i]
+            q_subs[self.gen_to_subid[i]] -= q_gen[i]
+
+            # for bus
+            p_bus[
+                self.gen_to_subid[i], topo_vect[self.gen_pos_topo_vect[i]] - 1
+            ] -= p_gen[i]
+            q_bus[
+                self.gen_to_subid[i], topo_vect[self.gen_pos_topo_vect[i]] - 1
+            ] -= q_gen[i]
+
+            # compute max and min values
+            if v_gen[i]:
+                # but only if gen is connected
+                v_bus[self.gen_to_subid[i], topo_vect[self.gen_pos_topo_vect[i]] - 1][
+                    0
+                ] = min(
+                    v_bus[
+                        self.gen_to_subid[i], topo_vect[self.gen_pos_topo_vect[i]] - 1
+                    ][0],
+                    v_gen[i],
+                )
+                v_bus[self.gen_to_subid[i], topo_vect[self.gen_pos_topo_vect[i]] - 1][
+                    1
+                ] = max(
+                    v_bus[
+                        self.gen_to_subid[i], topo_vect[self.gen_pos_topo_vect[i]] - 1
+                    ][1],
+                    v_gen[i],
+                )
+
+        for i in range(self.n_load):
+            # for substations
+            p_subs[self.load_to_subid[i]] += p_load[i]
+            q_subs[self.load_to_subid[i]] += q_load[i]
+
+            # for buses
+            p_bus[
+                self.load_to_subid[i], topo_vect[self.load_pos_topo_vect[i]] - 1
+            ] += p_load[i]
+            q_bus[
+                self.load_to_subid[i], topo_vect[self.load_pos_topo_vect[i]] - 1
+            ] += q_load[i]
+
+            # compute max and min values
+            if v_load[i]:
+                # but only if load is connected
+                v_bus[self.load_to_subid[i], topo_vect[self.load_pos_topo_vect[i]] - 1][
+                    0
+                ] = min(
+                    v_bus[
+                        self.load_to_subid[i], topo_vect[self.load_pos_topo_vect[i]] - 1
+                    ][0],
+                    v_load[i],
+                )
+                v_bus[self.load_to_subid[i], topo_vect[self.load_pos_topo_vect[i]] - 1][
+                    1
+                ] = max(
+                    v_bus[
+                        self.load_to_subid[i], topo_vect[self.load_pos_topo_vect[i]] - 1
+                    ][1],
+                    v_load[i],
+                )
+
+        for i in range(self.n_storage):
+            p_subs[self.storage_to_subid[i]] += p_storage[i]
+            q_subs[self.storage_to_subid[i]] += q_storage[i]
+            p_bus[self.storage_to_subid[i], topo_vect[self.storage_pos_topo_vect[i]] - 1] += p_storage[i]
+            q_bus[self.storage_to_subid[i], topo_vect[self.storage_pos_topo_vect[i]] - 1] += q_storage[i]
+
+            # compute max and min values
+            if v_storage[i] > 0:
+                # the storage unit is connected
+                v_bus[self.storage_to_subid[i], topo_vect[self.storage_pos_topo_vect[i]] - 1][0] = min(v_bus[self.storage_to_subid[i], topo_vect[self.storage_pos_topo_vect[i]] - 1][0], v_storage[i])
+                v_bus[self.storage_to_subid[i], topo_vect[self.storage_pos_topo_vect[i]] - 1][1] = max(v_bus[self.storage_to_subid[i], topo_vect[self.storage_pos_topo_vect[i]] - 1][1], v_storage[i])
+
+        if type(self).shunts_data_available:
+            p_s, q_s, v_s, bus_s = self.shunt_info()
+            for i in range(self.n_shunt):
+                # for substations
+                p_subs[self.shunt_to_subid[i]] += p_s[i]
+                q_subs[self.shunt_to_subid[i]] += q_s[i]
+
+                # for buses
+                p_bus[self.shunt_to_subid[i], bus_s[i] - 1] += p_s[i]
+                q_bus[self.shunt_to_subid[i], bus_s[i] - 1] += q_s[i]
+
+                # compute max and min values
+                v_bus[self.shunt_to_subid[i], bus_s[i] - 1][0] = min(v_bus[self.shunt_to_subid[i], bus_s[i] - 1][0], v_s[i])
+                v_bus[self.shunt_to_subid[i], bus_s[i] - 1][1] = max(v_bus[self.shunt_to_subid[i], bus_s[i] - 1][1], v_s[i])
+        else:
+            warnings.warn(
+                "Backend.check_kirchoff Impossible to get shunt information. Reactive information might be "
+                "incorrect."
+            )
+
+        diff_v_bus = np.zeros((self.n_sub, 2), dtype=float)
+        diff_v_bus[:, :] = v_bus[:, :, 1] - v_bus[:, :, 0]
+
+        # SanPen calcs -------------------------------------------------------------------------------------------------
+        dS = self.results.Sbus - self.numerical_circuit.Sbus * self.numerical_circuit.Sbase
+        dP = dS.real  # p_subs
+        dQ = dS.imag  # q_subs
+
+        # nodal mismatches (numerical method)
+        f_err = np.r_[dP[self.numerical_circuit.pqpv], dQ[self.numerical_circuit.pq]]
+
+        err = np.max(np.abs(f_err))
+        # --------------------------------------------------------------------------------------------------------------
+
+        return p_subs, q_subs, p_bus, q_bus, diff_v_bus
