@@ -601,6 +601,9 @@ class GridCalBackend(Backend):
                 else:
                     self.numerical_circuit.branch_data.active[k] = 1
 
+        # reset numerical circuit after the changes
+        self.numerical_circuit.reset_calculations()
+
     def runpf(self, is_dc=False):
         """
         INTERNAL
